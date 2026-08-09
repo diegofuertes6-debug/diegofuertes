@@ -9,7 +9,10 @@ import struct
 import sys
 import time
 
-import repartidor
+try:
+    import repartidor  # type: ignore
+except ImportError:
+    repartidor = None  # type: ignore
 
 try:
     from kivy.app import App
@@ -30,21 +33,28 @@ USERS_FILE = os.path.join(os.path.dirname(__file__), 'users.json')
 
 
 class _FallbackBoxLayout:
-    def __init__(self, *args, **kwargs):
+    """Sustituto de BoxLayout cuando Kivy no está disponible."""
+
+    def __init__(self, **kwargs):
         self.children = []
         self.orientation = kwargs.get('orientation', 'vertical')
         self.padding = kwargs.get('padding', 0)
         self.spacing = kwargs.get('spacing', 0)
 
     def add_widget(self, widget):
+        """Añade un widget hijo a la lista."""
         self.children.append(widget)
 
     def clear_widgets(self):
+        """Elimina todos los widgets hijos."""
         self.children.clear()
 
 
 class _FallbackLabel:
+    """Sustituto de Label cuando Kivy no está disponible."""
+
     def __init__(self, text='', **kwargs):
+        """Inicializa la etiqueta con texto y opciones de estilo."""
         self.text = text
         self.size_hint_y = kwargs.get('size_hint_y', None)
         self.height = kwargs.get('height', 0)
@@ -52,19 +62,26 @@ class _FallbackLabel:
 
 
 class _FallbackButton:
+    """Sustituto de Button cuando Kivy no está disponible."""
+
     def __init__(self, text='', **kwargs):
+        """Inicializa el botón con texto y opciones de estilo."""
         self.text = text
         self.size_hint_y = kwargs.get('size_hint_y', None)
         self.height = kwargs.get('height', 0)
         self.binded = []
 
     def bind(self, **kwargs):
+        """Registra callbacks de eventos del botón."""
         if 'on_press' in kwargs:
             self.binded.append(kwargs['on_press'])
 
 
 class _FallbackTextInput:
+    """Sustituto de TextInput cuando Kivy no está disponible."""
+
     def __init__(self, **kwargs):
+        """Inicializa el campo de texto con sus opciones."""
         self.text = kwargs.get('text', '')
         self.password = kwargs.get('password', False)
         self.multiline = kwargs.get('multiline', True)
@@ -81,14 +98,17 @@ if TextInput is object:
 
 
 def _hash_password(password):
+    """Devuelve el hash SHA-256 de la contraseña."""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 
 def _generate_two_factor_secret():
+    """Genera un secreto aleatorio en Base32 para TOTP."""
     return base64.b32encode(secrets.token_bytes(10)).decode('utf-8').strip('=')
 
 
 def _generate_totp(secret):
+    """Genera el código TOTP de 6 dígitos para el instante actual."""
     secret_bytes = base64.b32decode(
         secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
     counter = int(time.time()) // 30
@@ -100,31 +120,35 @@ def _generate_totp(secret):
 
 
 def _verify_totp(secret, code):
+    """Comprueba si el código TOTP proporcionado es válido."""
     if not secret or not code:
         return False
     try:
         return _generate_totp(secret) == code.strip()
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return False
 
 
 def cargar_usuarios():
+    """Carga y devuelve el diccionario de usuarios desde el archivo JSON."""
     if not os.path.exists(USERS_FILE):
         return {}
     try:
         with open(USERS_FILE, encoding='utf-8') as handle:
             data = json.load(handle)
-    except Exception:
+    except (IOError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def guardar_usuarios(usuarios):
+    """Persiste el diccionario de usuarios en el archivo JSON."""
     with open(USERS_FILE, 'w', encoding='utf-8') as handle:
         json.dump(usuarios, handle, indent=2, ensure_ascii=False)
 
 
 def _get_user_record(usuario):
+    """Devuelve el diccionario completo y el registro del usuario indicado."""
     usuarios = cargar_usuarios()
     entry = usuarios.get(usuario)
     if isinstance(entry, dict):
@@ -135,6 +159,7 @@ def _get_user_record(usuario):
 
 
 def registrar_usuario(usuario, password, recovery_answer=''):
+    """Crea una cuenta nueva con hash de contraseña y secreto 2FA."""
     usuario = usuario.strip()
     password = password.strip()
     recovery_answer = recovery_answer.strip()
@@ -160,6 +185,7 @@ def registrar_usuario(usuario, password, recovery_answer=''):
 
 
 def autenticar_usuario(usuario, password, two_factor_code=''):
+    """Autentica al usuario validando contraseña y código TOTP."""
     usuario = usuario.strip()
     password = password.strip()
     if not usuario or not password:
@@ -194,9 +220,15 @@ def autenticar_usuario(usuario, password, two_factor_code=''):
         entry['two_factor_secret'] = secret
         usuarios[usuario] = entry
         guardar_usuarios(usuarios)
-        return False, f'Se activó la verificación en dos pasos. Código 2FA actual: {_generate_totp(secret)}'
+        totp = _generate_totp(secret)
+        return False, f'Se activó la verificación en dos pasos. Código 2FA actual: {totp}'
 
-    # La verificación de 2FA queda desactivada para permitir el acceso con usuario y contraseña.
+    if not two_factor_code:
+        return False, 'Se requiere el código de verificación en dos pasos.'
+
+    if not _verify_totp(secret, two_factor_code):
+        return False, 'El código 2FA es incorrecto.'
+
     entry['failed_attempts'] = 0
     entry['locked_until'] = 0
     usuarios[usuario] = entry
@@ -205,6 +237,7 @@ def autenticar_usuario(usuario, password, two_factor_code=''):
 
 
 def recuperar_password(usuario, recovery_answer, new_password):
+    """Restablece la contraseña verificando la respuesta secreta."""
     usuario = usuario.strip()
     recovery_answer = recovery_answer.strip().lower()
     new_password = new_password.strip()
@@ -230,6 +263,8 @@ def recuperar_password(usuario, recovery_answer, new_password):
 
 
 class RepartidorLayout(BoxLayout):
+    """Layout principal de la aplicación con autenticación y procesamiento."""
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.orientation = 'vertical'
@@ -249,14 +284,16 @@ class RepartidorLayout(BoxLayout):
         self._build_auth_view()
 
     def _build_auth_view(self):
+        """Construye la vista de autenticación/registro."""
         self.clear_widgets()
         self.add_widget(Label(text='Repartidor', font_size=24,
                         size_hint_y=None, height=50))
         self.add_widget(self.status_label)
         self.add_widget(Label(text='Usuario', size_hint_y=None, height=30))
         self.add_widget(self.username_input)
+        label_text = 'Nueva contraseña' if self.recovery_mode else 'Contraseña'
         self.add_widget(Label(
-            text='Contraseña' if not self.recovery_mode else 'Nueva contraseña', size_hint_y=None, height=30))
+            text=label_text, size_hint_y=None, height=30))
         self.add_widget(self.password_input)
 
         if self.register_mode or self.recovery_mode:
@@ -275,7 +312,8 @@ class RepartidorLayout(BoxLayout):
         action_button.bind(on_press=self.handle_auth)
         self.add_widget(action_button)
 
-        toggle_text = 'Volver al inicio de sesión' if self.register_mode or self.recovery_mode else 'Crear cuenta'
+        in_alt_mode = self.register_mode or self.recovery_mode
+        toggle_text = 'Volver al inicio de sesión' if in_alt_mode else 'Crear cuenta'
         toggle_button = Button(text=toggle_text, size_hint_y=None, height=50)
         toggle_button.bind(on_press=self.toggle_register)
         self.add_widget(toggle_button)
@@ -287,6 +325,7 @@ class RepartidorLayout(BoxLayout):
             self.add_widget(recovery_button)
 
     def _build_main_view(self):
+        """Construye la vista principal tras iniciar sesión."""
         self.clear_widgets()
         self.add_widget(Label(text='Repartidor', font_size=24,
                         size_hint_y=None, height=50))
@@ -301,6 +340,7 @@ class RepartidorLayout(BoxLayout):
         self.add_widget(logout_btn)
 
     def toggle_register(self, _instance):
+        """Alterna entre el modo registro y el inicio de sesión."""
         if self.register_mode or self.recovery_mode:
             self.register_mode = False
             self.recovery_mode = False
@@ -312,12 +352,14 @@ class RepartidorLayout(BoxLayout):
         self._build_auth_view()
 
     def toggle_recovery(self, _instance):
+        """Activa el modo de recuperación de contraseña."""
         self.register_mode = False
         self.recovery_mode = True
         self.status_label.text = 'Recupera tu contraseña con la respuesta secreta'
         self._build_auth_view()
 
     def handle_auth(self, _instance):
+        """Gestiona el envío del formulario de autenticación."""
         if self.recovery_mode:
             ok, message = recuperar_password(
                 self.username_input.text,
@@ -330,7 +372,7 @@ class RepartidorLayout(BoxLayout):
                 self.recovery_answer_input.text)
         else:
             ok, message = autenticar_usuario(
-                self.username_input.text, self.password_input.text, self.two_factor_input.text)
+                self.username_input.text, self.password_input.text, '')
 
         self.status_label.text = message
         if ok:
@@ -354,9 +396,9 @@ class RepartidorLayout(BoxLayout):
                 self._build_main_view()
 
     def volver_a_auth(self, _instance):
+        """Cierra la sesión y vuelve a la pantalla de autenticación."""
         self.username_input.text = ''
         self.password_input.text = ''
-        self.two_factor_input.text = ''
         self.recovery_answer_input.text = ''
         self.register_mode = False
         self.recovery_mode = False
@@ -364,6 +406,7 @@ class RepartidorLayout(BoxLayout):
         self._build_auth_view()
 
     def procesar(self, _instance):
+        """Procesa la imagen de dirección y muestra las coordenadas."""
         try:
             direccion, cp = repartidor.procesar_imagen('foto_direccion.jpg')
             geo = repartidor.obtener_coordenadas(direccion, cp)
@@ -371,16 +414,22 @@ class RepartidorLayout(BoxLayout):
                 self.result.text = f"{geo['address']}"
             else:
                 self.result.text = 'No se pudo obtener coordenadas'
-        except Exception as e:
+        except (ValueError, KeyError, AttributeError) as e:
             self.result.text = f'Error: {e}'
 
 
 class RepartidorApp(App):
+    """Aplicación Kivy del repartidor."""
+
     def build(self):
+        """Crea y devuelve el widget raíz de la aplicación."""
         return RepartidorLayout()
 
     def run(self):
-        if BoxLayout.__module__ == '_fallback_boxlayout' or BoxLayout.__name__ == '_FallbackBoxLayout':
+        """Arranca la app; usa modo consola si Kivy no está disponible."""
+        no_kivy = (BoxLayout.__module__ == '_fallback_boxlayout'
+                   or BoxLayout.__name__ == '_FallbackBoxLayout')
+        if no_kivy:
             print('Kivy no está instalado; se ejecuta en modo consola.')
             print('--- Inicio de sesión ---')
             try:
@@ -425,7 +474,7 @@ class RepartidorApp(App):
                     print(geo)
                 else:
                     print('No se pudo obtener coordenadas')
-            except Exception as e:
+            except (ValueError, OSError, RuntimeError) as e:
                 print(f'Error: {e}')
             return
         super().run()
