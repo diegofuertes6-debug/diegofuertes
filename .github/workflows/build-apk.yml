@@ -72,6 +72,12 @@ jobs:
       - name: Build release APK
         env:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          # Signing is optional: set these secrets in the repository to produce a signed release APK.
+          # Without them, Buildozer will produce an unsigned release APK.
+          P4A_RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_PATH }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
         run: |
           buildozer android release
 
