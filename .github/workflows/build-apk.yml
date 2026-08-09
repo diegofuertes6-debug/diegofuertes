@@ -1,4 +1,4 @@
-name: Build APK (Debug)
+name: Build APK (Debug & Release)
 
 on:
   push:
@@ -66,5 +66,19 @@ jobs:
         with:
           name: repartidor-apk-debug
           path: |
-            bin/*.apk
+            bin/*-debug.apk
             ./.buildozer/android/platform/build-*/dists/*/build/outputs/apk/debug/*.apk
+
+      - name: Build release APK
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          buildozer android release
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repartidor-apk-release
+          path: |
+            bin/*-release.apk
+            ./.buildozer/android/platform/build-*/dists/*/build/outputs/apk/release/*.apk
