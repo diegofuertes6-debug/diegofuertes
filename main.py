@@ -1,7 +1,11 @@
 """Aplicación principal del repartidor con autenticación y flujo de procesamiento."""
+import base64
 import hashlib
+import hmac
 import json
 import os
+import secrets
+import struct
 import sys
 import time
 
@@ -98,6 +102,47 @@ def _hash_password(password):
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 
+def _generar_secreto_totp():
+    """Genera un secreto Base32 compatible con Google Authenticator."""
+    return base64.b32encode(secrets.token_bytes(20)).decode('utf-8').rstrip('=')
+
+
+def _generar_totp(secret):
+    """Genera el código TOTP de 6 dígitos del intervalo actual."""
+    secret_bytes = base64.b32decode(
+        secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
+    counter = int(time.time()) // 30
+    counter_bytes = struct.pack('>Q', counter)
+    digest = hmac.new(secret_bytes, counter_bytes, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = int.from_bytes(digest[offset:offset + 4], 'big') & 0x7FFFFFFF
+    return f"{code % 1000000:06d}"
+
+
+def _verificar_totp(secret, code):
+    """Comprueba el código TOTP aceptando ±1 intervalo de 30 s."""
+    if not secret or not code:
+        return False
+    try:
+        t = int(time.time()) // 30
+        secret_bytes = base64.b32decode(
+            secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
+        for delta in (-1, 0, 1):
+            counter_bytes = struct.pack('>Q', t + delta)
+            digest = hmac.new(
+                secret_bytes, counter_bytes, hashlib.sha1).digest()
+            offset = digest[-1] & 0x0F
+            candidate = (
+                int.from_bytes(digest[offset:offset + 4], 'big')
+                & 0x7FFFFFFF
+            ) % 1000000
+            if f"{candidate:06d}" == code.strip():
+                return True
+        return False
+    except (ValueError, TypeError):
+        return False
+
+
 def cargar_usuarios():
     """Carga y devuelve el diccionario de usuarios desde el archivo JSON."""
     if not os.path.exists(USERS_FILE):
@@ -128,44 +173,50 @@ def _get_user_record(usuario):
 
 
 def registrar_usuario(usuario, password, recovery_answer=''):
-    """Crea una cuenta nueva con hash de contraseña."""
+    """Crea una cuenta nueva y devuelve el secreto TOTP para Google Authenticator."""
     usuario = usuario.strip()
     password = password.strip()
     recovery_answer = recovery_answer.strip()
     if not usuario or not password:
         return False, 'Usuario y contraseña son obligatorios.'
     if not recovery_answer:
-        return False, 'Debes indicar una respuesta secreta para poder recuperar la contraseña.'
+        return False, 'Debes indicar una respuesta secreta para recuperar la contraseña.'
 
     usuarios = cargar_usuarios()
     if usuario in usuarios:
         return False, 'El usuario ya existe. Prueba a iniciar sesión.'
 
+    secret = _generar_secreto_totp()
     usuarios[usuario] = {
         'password': _hash_password(password),
         'recovery_answer': _hash_password(recovery_answer.lower()),
+        'totp_secret': secret,
         'failed_attempts': 0,
         'locked_until': 0
     }
     guardar_usuarios(usuarios)
-    return True, 'Cuenta creada correctamente. Ya puedes iniciar sesión.'
+    return True, (
+        f'Cuenta creada. Configura Google Authenticator con esta clave:\n'
+        f'{secret}\n'
+        f'(Añade cuenta → Clave de configuración)'
+    )
 
 
 def autenticar_usuario(usuario, password):
-    """Autentica al usuario validando contraseña."""
+    """Valida contraseña; devuelve pending_2fa si es correcta."""
     usuario = usuario.strip()
     password = password.strip()
     if not usuario or not password:
-        return False, 'Usuario y contraseña son obligatorios.'
+        return False, 'Usuario y contraseña son obligatorios.', None
 
     usuarios, entry = _get_user_record(usuario)
     if entry is None:
-        return False, 'Usuario no encontrado. Regístrate para continuar.'
+        return False, 'Usuario no encontrado. Regístrate para continuar.', None
 
     now = int(time.time())
     locked_until = entry.get('locked_until', 0)
     if locked_until and now < locked_until:
-        return False, 'La cuenta está bloqueada temporalmente por varios intentos fallidos.'
+        return False, 'Cuenta bloqueada temporalmente.', None
 
     stored_hash = entry.get('password')
     if stored_hash != _hash_password(password):
@@ -176,16 +227,29 @@ def autenticar_usuario(usuario, password):
             entry['failed_attempts'] = 0
             usuarios[usuario] = entry
             guardar_usuarios(usuarios)
-            return False, 'Demasiados intentos fallidos. La cuenta queda bloqueada 5 minutos.'
+            return False, 'Demasiados intentos. Cuenta bloqueada 5 minutos.', None
         usuarios[usuario] = entry
         guardar_usuarios(usuarios)
-        return False, 'La contraseña es incorrecta.'
+        return False, 'La contraseña es incorrecta.', None
 
     entry['failed_attempts'] = 0
     entry['locked_until'] = 0
     usuarios[usuario] = entry
     guardar_usuarios(usuarios)
-    return True, 'Acceso correcto.'
+    return True, 'Introduce el código de Google Authenticator.', 'pending_2fa'
+
+
+def verificar_totp_login(usuario, code):
+    """Verifica el código TOTP de Google Authenticator para el usuario."""
+    _, entry = _get_user_record(usuario)
+    if entry is None:
+        return False, 'Usuario no encontrado.'
+    secret = entry.get('totp_secret', '')
+    if not secret:
+        return False, 'Este usuario no tiene Google Authenticator configurado.'
+    if _verificar_totp(secret, code):
+        return True, 'Acceso correcto.'
+    return False, 'Código incorrecto. Comprueba la hora del dispositivo.'
 
 
 def recuperar_password(usuario, recovery_answer, new_password):
@@ -225,9 +289,12 @@ class RepartidorLayout(BoxLayout):
 
         self.register_mode = False
         self.recovery_mode = False
+        self.pending_2fa = False
+        self._usuario_pendiente = ''
         self.username_input = TextInput(multiline=False)
         self.password_input = TextInput(multiline=False, password=True)
         self.recovery_answer_input = TextInput(multiline=False)
+        self.totp_input = TextInput(multiline=False)
         self.status_label = Label(
             text='Introduce tus datos para entrar', size_hint_y=None, height=40)
         self.result = Label(text='Pulsa para procesar',
@@ -236,16 +303,29 @@ class RepartidorLayout(BoxLayout):
         self._build_auth_view()
 
     def _build_auth_view(self):
-        """Construye la vista de autenticación/registro."""
+        """Construye la vista de login, registro o verificación TOTP."""
         self.clear_widgets()
         self.add_widget(Label(text='Repartidor', font_size=24,
                         size_hint_y=None, height=50))
         self.add_widget(self.status_label)
+
+        if self.pending_2fa:
+            self.add_widget(Label(
+                text='Código Google Authenticator', size_hint_y=None, height=30))
+            self.add_widget(self.totp_input)
+            verify_btn = Button(
+                text='Verificar código', size_hint_y=None, height=60)
+            verify_btn.bind(on_press=self.handle_2fa)
+            self.add_widget(verify_btn)
+            cancel_btn = Button(text='Cancelar', size_hint_y=None, height=50)
+            cancel_btn.bind(on_press=self.volver_a_auth)
+            self.add_widget(cancel_btn)
+            return
+
         self.add_widget(Label(text='Usuario', size_hint_y=None, height=30))
         self.add_widget(self.username_input)
         label_text = 'Nueva contraseña' if self.recovery_mode else 'Contraseña'
-        self.add_widget(Label(
-            text=label_text, size_hint_y=None, height=30))
+        self.add_widget(Label(text=label_text, size_hint_y=None, height=30))
         self.add_widget(self.password_input)
 
         if self.register_mode or self.recovery_mode:
@@ -317,43 +397,57 @@ class RepartidorLayout(BoxLayout):
                 self.username_input.text,
                 self.recovery_answer_input.text,
                 self.password_input.text)
+            self.status_label.text = message
+            if ok:
+                self._reset_inputs()
+                self.register_mode = False
+                self.recovery_mode = False
+                self.status_label.text = 'Contraseña restablecida. Inicia sesión.'
+                self._build_auth_view()
         elif self.register_mode:
             ok, message = registrar_usuario(
                 self.username_input.text,
                 self.password_input.text,
                 self.recovery_answer_input.text)
+            self.status_label.text = message
+            if ok:
+                self._reset_inputs()
+                self.register_mode = False
+                self.status_label.text = message  # muestra la clave TOTP
+                self._build_auth_view()
         else:
-            ok, message = autenticar_usuario(
+            ok, message, estado = autenticar_usuario(
                 self.username_input.text, self.password_input.text)
+            self.status_label.text = message
+            if ok and estado == 'pending_2fa':
+                self._usuario_pendiente = self.username_input.text.strip()
+                self.totp_input.text = ''
+                self.pending_2fa = True
+                self._build_auth_view()
 
+    def handle_2fa(self, _instance):
+        """Verifica el código de Google Authenticator."""
+        ok, message = verificar_totp_login(
+            self._usuario_pendiente, self.totp_input.text)
         self.status_label.text = message
         if ok:
-            if self.recovery_mode:
-                self.username_input.text = ''
-                self.password_input.text = ''
-                self.recovery_answer_input.text = ''
-                self.register_mode = False
-                self.recovery_mode = False
-                self.status_label.text = 'Contraseña restablecida. Inicia sesión.'
-                self._build_auth_view()
-            elif self.register_mode:
-                self.username_input.text = ''
-                self.password_input.text = ''
-                self.recovery_answer_input.text = ''
-                self.register_mode = False
-                self.recovery_mode = False
-                self.status_label.text = 'Cuenta creada. Inicia sesión.'
-                self._build_auth_view()
-            else:
-                self._build_main_view()
+            self.pending_2fa = False
+            self._build_main_view()
 
-    def volver_a_auth(self, _instance):
-        """Cierra la sesión y vuelve a la pantalla de autenticación."""
+    def _reset_inputs(self):
+        """Limpia todos los campos de texto del formulario."""
         self.username_input.text = ''
         self.password_input.text = ''
         self.recovery_answer_input.text = ''
+        self.totp_input.text = ''
+
+    def volver_a_auth(self, _instance):
+        """Cierra la sesión y vuelve a la pantalla de autenticación."""
+        self._reset_inputs()
         self.register_mode = False
         self.recovery_mode = False
+        self.pending_2fa = False
+        self._usuario_pendiente = ''
         self.status_label.text = 'Introduce tus datos para entrar'
         self._build_auth_view()
 
