@@ -1,11 +1,7 @@
 """Aplicación principal del repartidor con autenticación y flujo de procesamiento."""
-import base64
 import hashlib
-import hmac
 import json
 import os
-import secrets
-import struct
 import sys
 import time
 
@@ -102,33 +98,6 @@ def _hash_password(password):
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 
-def _generate_two_factor_secret():
-    """Genera un secreto aleatorio en Base32 para TOTP."""
-    return base64.b32encode(secrets.token_bytes(10)).decode('utf-8').strip('=')
-
-
-def _generate_totp(secret):
-    """Genera el código TOTP de 6 dígitos para el instante actual."""
-    secret_bytes = base64.b32decode(
-        secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
-    counter = int(time.time()) // 30
-    counter_bytes = struct.pack('>Q', counter)
-    digest = hmac.new(secret_bytes, counter_bytes, hashlib.sha1).digest()
-    offset = digest[-1] & 0x0F
-    binary_code = int.from_bytes(digest[offset:offset + 4], 'big') & 0x7FFFFFFF
-    return f"{binary_code % 1000000:06d}"
-
-
-def _verify_totp(secret, code):
-    """Comprueba si el código TOTP proporcionado es válido."""
-    if not secret or not code:
-        return False
-    try:
-        return _generate_totp(secret) == code.strip()
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
 def cargar_usuarios():
     """Carga y devuelve el diccionario de usuarios desde el archivo JSON."""
     if not os.path.exists(USERS_FILE):
@@ -159,7 +128,7 @@ def _get_user_record(usuario):
 
 
 def registrar_usuario(usuario, password, recovery_answer=''):
-    """Crea una cuenta nueva con hash de contraseña y secreto 2FA."""
+    """Crea una cuenta nueva con hash de contraseña."""
     usuario = usuario.strip()
     password = password.strip()
     recovery_answer = recovery_answer.strip()
@@ -172,20 +141,18 @@ def registrar_usuario(usuario, password, recovery_answer=''):
     if usuario in usuarios:
         return False, 'El usuario ya existe. Prueba a iniciar sesión.'
 
-    secret = _generate_two_factor_secret()
     usuarios[usuario] = {
         'password': _hash_password(password),
         'recovery_answer': _hash_password(recovery_answer.lower()),
-        'two_factor_secret': secret,
         'failed_attempts': 0,
         'locked_until': 0
     }
     guardar_usuarios(usuarios)
-    return True, f'Cuenta creada correctamente. Código 2FA actual: {_generate_totp(secret)}'
+    return True, 'Cuenta creada correctamente. Ya puedes iniciar sesión.'
 
 
-def autenticar_usuario(usuario, password, two_factor_code=''):
-    """Autentica al usuario validando contraseña y código TOTP."""
+def autenticar_usuario(usuario, password):
+    """Autentica al usuario validando contraseña."""
     usuario = usuario.strip()
     password = password.strip()
     if not usuario or not password:
@@ -213,21 +180,6 @@ def autenticar_usuario(usuario, password, two_factor_code=''):
         usuarios[usuario] = entry
         guardar_usuarios(usuarios)
         return False, 'La contraseña es incorrecta.'
-
-    secret = entry.get('two_factor_secret')
-    if not secret:
-        secret = _generate_two_factor_secret()
-        entry['two_factor_secret'] = secret
-        usuarios[usuario] = entry
-        guardar_usuarios(usuarios)
-        totp = _generate_totp(secret)
-        return False, f'Se activó la verificación en dos pasos. Código 2FA actual: {totp}'
-
-    if not two_factor_code:
-        return False, 'Se requiere el código de verificación en dos pasos.'
-
-    if not _verify_totp(secret, two_factor_code):
-        return False, 'El código 2FA es incorrecto.'
 
     entry['failed_attempts'] = 0
     entry['locked_until'] = 0
@@ -372,7 +324,7 @@ class RepartidorLayout(BoxLayout):
                 self.recovery_answer_input.text)
         else:
             ok, message = autenticar_usuario(
-                self.username_input.text, self.password_input.text, '')
+                self.username_input.text, self.password_input.text)
 
         self.status_label.text = message
         if ok:
@@ -435,7 +387,7 @@ class RepartidorApp(App):
             try:
                 usuario = input('Usuario: ').strip()
                 password = input('Contraseña: ').strip()
-                ok, message = autenticar_usuario(usuario, password, '')
+                ok, message = autenticar_usuario(usuario, password)
                 if not ok:
                     if 'Usuario no encontrado' in message:
                         registrar = input(
