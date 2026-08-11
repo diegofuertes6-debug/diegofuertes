@@ -1,0 +1,29 @@
+# Build artifacts
+.buildozer/
+.buildozer-venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# Local runtime files
+.env
+users.json
+webServerApiSettings.json
+bin/*.apk
+bin/*.aab
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db

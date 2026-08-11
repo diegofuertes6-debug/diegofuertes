@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Aplicación de reparto con soporte para ejecutar fuera de Colab."""
+"""Aplicación de reparto robusta para escritorio y Android."""
 import json
 import os
 import re
-from base64 import b64decode
 from datetime import datetime
 
 DEFAULT_PHOTO_FILENAME = 'foto_direccion.jpg'
@@ -19,100 +18,156 @@ API_KEY_CANDIDATES = (
 
 try:
     from dotenv import load_dotenv
-except Exception:
+except ImportError:
     load_dotenv = None
 
 try:
-    from IPython.display import display, Javascript
-except Exception:
-    display = None
-    Javascript = None
-
-try:
-    from google.colab.output import eval_js
-except Exception:
-    eval_js = None
+    import requests
+except ImportError:
+    requests = None
 
 try:
     import pytesseract
-except Exception:
+except ImportError:
     pytesseract = None
 
 try:
     from PIL import Image
-except Exception:
+except ImportError:
     Image = None
 
 try:
-    import requests
-except Exception:
-    requests = None
+    from kivy.utils import platform as kivy_platform
+except ImportError:
+    kivy_platform = None
+
+
+def _get_platform_name():
+    if callable(kivy_platform):
+        try:
+            return str(kivy_platform()).lower()
+        except Exception:
+            return ''
+    return str(kivy_platform or '').lower()
+
+
+def _safe_read_json(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _resolve_path(path):
+    if not path:
+        path = DEFAULT_PHOTO_FILENAME
+    path = os.path.expanduser(str(path))
+    if os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), path))
+
+
+def _is_android():
+    return _get_platform_name() == 'android' or os.environ.get('ANDROID_ARGUMENT') is not None
+
+
+def _take_photo_android(target_path):
+    try:
+        from android.permissions import Permission, request_permissions
+
+        request_permissions([
+            Permission.CAMERA,
+            Permission.READ_EXTERNAL_STORAGE,
+            Permission.WRITE_EXTERNAL_STORAGE,
+        ])
+    except (ImportError, AttributeError) as exc:
+        print(f'No se pudieron solicitar permisos de cámara: {exc}')
+
+    try:
+        from android import activity
+        from jnius import autoclass
+
+        Intent = autoclass('android.content.Intent')
+        MediaStore = autoclass('android.provider.MediaStore')
+        Uri = autoclass('android.net.Uri')
+        File = autoclass('java.io.File')
+
+        java_file = File(target_path)
+        uri = Uri.fromFile(java_file)
+        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+        activity.startActivity(intent)
+        return target_path
+    except (ImportError, AttributeError) as exc:
+        print(f'No se pudo abrir la cámara nativa: {exc}')
+        return target_path
 
 
 def take_photo(filename='foto_direccion.jpg', quality=0.8):
-    if Javascript is None or display is None or eval_js is None:
-        print('La captura de cámara requiere IPython/Colab; se omite en esta ejecución.')
-        return filename
+    del quality
+    target_path = _resolve_path(filename)
+    if os.path.exists(target_path):
+        return target_path
 
-    js = Javascript('''
-    async function takePhoto(quality) {
-      const div = document.createElement('div');
-      const capture = document.createElement('button');
-      capture.textContent = 'CAPTURAR DIRECCIÓN';
-      div.appendChild(capture);
+    if _is_android():
+        return _take_photo_android(target_path)
 
-      const video = document.createElement('video');
-      video.style.display = 'block';
-      const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}});
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
 
-      document.body.appendChild(div);
-      div.appendChild(video);
-      video.srcObject = stream;
-      await video.play();
+    if cv2 is not None:
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                cv2.imwrite(target_path, frame)
+                cap.release()
+                if os.path.exists(target_path):
+                    return target_path
+            cap.release()
 
-      google.colab.output.setIframeHeight(document.documentElement.scrollHeight, true);
-
-      await new Promise((resolve) => capture.onclick = resolve);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0);
-      stream.getVideoTracks()[0].stop();
-      div.remove();
-      return canvas.toDataURL('image/jpeg', quality);
-    }
-    ''')
-    display(js)
-    data = eval_js('takePhoto({})'.format(quality))
-    binary = b64decode(data.split(',')[1])
-    with open(filename, 'wb') as f:
-        f.write(binary)
-    return filename
+    print('No se pudo capturar una foto automáticamente; se usará la ruta indicada.')
+    return target_path
 
 
 def procesar_imagen(path):
+    target_path = _resolve_path(path)
+    if not os.path.isfile(target_path):
+        print(f'No existe la imagen: {target_path}')
+        return '', ''
+
     if pytesseract is None or Image is None:
         print('pytesseract/Pillow no están disponibles para procesar la imagen.')
         return '', ''
 
-    texto = pytesseract.image_to_string(Image.open(path), lang='eng+spa')
+    try:
+        with Image.open(target_path) as image:
+            texto = pytesseract.image_to_string(image, lang='eng+spa')
+    except (OSError, ValueError) as exc:
+        print(f'No se pudo procesar la imagen: {exc}')
+        return '', ''
+
+    texto = re.sub(r'\s+', ' ', texto).strip()
     print('\n--- Texto detectado ---')
     print(texto)
 
-    cp = re.search(r'\b\d{5}\b', texto)
-    cp_final = cp.group() if cp else ''
+    cp_match = re.search(r'\b\d{5}\b', texto)
+    cp_final = cp_match.group() if cp_match else ''
 
     patrones = [
-        r'(Calle\s+[A-Za-z0-9\s]+)',
-        r'(Avda\.?\s+[A-Za-z0-9\s]+)',
-        r'(C/\s*[A-Za-z0-9\s]+)'
+        r'\b(?:Calle|Calleja|C/|C\.\/|Avda|Avenida|Avinguda|Plaza|Paseo|Carrera|Camino|Ronda|Via)\b[^\n]{0,80}',
+        r'\b(?:Calle|C/|Avda|Avenida|Plaza|Paseo)\b[^\n]{0,80}',
     ]
     direccion_final = ''
-    for p in patrones:
-        m = re.search(p, texto, re.IGNORECASE)
-        if m:
-            direccion_final = m.group()
+    for patron in patrones:
+        match = re.search(patron, texto, re.IGNORECASE)
+        if match:
+            direccion_final = re.sub(r'\s+', ' ', match.group()).strip()
             break
 
     return direccion_final, cp_final
@@ -122,10 +177,13 @@ def cargar_api_key():
     dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 
     if load_dotenv is not None and os.path.exists(dotenv_path):
-        load_dotenv(dotenv_path=dotenv_path, override=False)
+        try:
+            load_dotenv(dotenv_path=dotenv_path, override=False)
+        except Exception as exc:
+            print(f'No se pudo cargar .env: {exc}')
     elif os.path.exists(dotenv_path):
-        with open(dotenv_path, encoding='utf-8') as f:
-            for line in f:
+        with open(dotenv_path, encoding='utf-8') as handle:
+            for line in handle:
                 line = line.strip()
                 if not line or line.startswith('#') or '=' not in line:
                     continue
@@ -139,19 +197,13 @@ def cargar_api_key():
     if api_key and api_key != 'TU_API_KEY_AQUÍ':
         return api_key
 
-    settings_path = os.path.join(os.path.dirname(
-        __file__), 'webServerApiSettings.json')
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path, encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                for key in API_KEY_CANDIDATES:
-                    value = data.get(key)
-                    if isinstance(value, str) and value.strip() and value.strip() != 'TU_API_KEY_AQUÍ':
-                        return value.strip()
-        except Exception as e:
-            print(f'No se pudo leer {settings_path}: {e}')
+    settings_path = os.path.join(os.path.dirname(__file__), 'webServerApiSettings.json')
+    data = _safe_read_json(settings_path)
+    if isinstance(data, dict):
+        for key in API_KEY_CANDIDATES:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip() and value.strip() != 'TU_API_KEY_AQUÍ':
+                return value.strip()
 
     return ''
 
@@ -162,8 +214,15 @@ lista_paradas = []
 
 
 def obtener_coordenadas(direccion, cp):
+    if not direccion or not cp:
+        return None
+
     if requests is None:
         print('requests no está instalado; se omite la geolocalización.')
+        return None
+
+    if not API_KEY:
+        print('No hay API key configurada; se omite la geocodificación.')
         return None
 
     full_address = f'{direccion}, {cp}, España'
@@ -171,9 +230,13 @@ def obtener_coordenadas(direccion, cp):
     params = {'address': full_address, 'key': API_KEY}
     try:
         resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
         res = resp.json()
-    except Exception as e:
-        print(f'Error al solicitar geocodificación: {e}')
+    except requests.RequestException as exc:
+        print(f'Error al solicitar geocodificación: {exc}')
+        return None
+    except ValueError as exc:
+        print(f'Respuesta inválida de geocodificación: {exc}')
         return None
 
     if res.get('status') == 'OK' and res.get('results'):
@@ -185,8 +248,7 @@ def obtener_coordenadas(direccion, cp):
 def asignar_prioridad(parada, prioridad):
     if not isinstance(parada, dict):
         return parada
-    prioridad_valida = prioridad.lower().strip(
-    ) if isinstance(prioridad, str) else 'media'
+    prioridad_valida = prioridad.lower().strip() if isinstance(prioridad, str) else 'media'
     if prioridad_valida not in {'baja', 'media', 'alta'}:
         prioridad_valida = 'media'
     parada['prioridad'] = prioridad_valida
@@ -201,26 +263,16 @@ def priorizar_paradas(paradas, modo='moto'):
     if modo not in {'pie', 'moto', 'coche'}:
         modo = 'moto'
 
-    ahora = datetime.now()
-    es_tarde = ahora.hour >= 19
-
     orden = {'alta': 0, 'media': 1, 'baja': 2}
     paradas_ordenadas = sorted(
-        paradas, key=lambda p: orden.get(p.get('prioridad', 'media'), 1))
+        (p for p in paradas if isinstance(p, dict)),
+        key=lambda p: orden.get(p.get('prioridad', 'media'), 1)
+    )
 
-    if es_tarde:
-        paradas_altas = [
-            p for p in paradas_ordenadas if p.get('prioridad') == 'alta']
-        paradas_restantes = [
-            p for p in paradas_ordenadas if p.get('prioridad') != 'alta']
+    if datetime.now().hour >= 19:
+        paradas_altas = [p for p in paradas_ordenadas if p.get('prioridad') == 'alta']
+        paradas_restantes = [p for p in paradas_ordenadas if p.get('prioridad') != 'alta']
         return paradas_altas + paradas_restantes
-
-    if modo == 'pie':
-        return paradas_ordenadas
-    if modo == 'moto':
-        return paradas_ordenadas
-    if modo == 'coche':
-        return paradas_ordenadas
 
     return paradas_ordenadas
 
@@ -229,7 +281,13 @@ def generar_ruta_maps(paradas, modo='moto'):
     if not paradas:
         return 'No hay paradas'
 
-    paradas_priorizadas = priorizar_paradas(paradas, modo)
+    paradas_priorizadas = [
+        p for p in priorizar_paradas(paradas, modo)
+        if isinstance(p.get('lat'), (int, float)) and isinstance(p.get('lng'), (int, float))
+    ]
+    if not paradas_priorizadas:
+        return 'No hay paradas con coordenadas válidas'
+
     base_url = 'https://www.google.com/maps/dir/?api=1'
     destino = f'&destination={paradas_priorizadas[-1]["lat"]},{paradas_priorizadas[-1]["lng"]}'
     waypoints = ''
@@ -247,7 +305,7 @@ def main():
             print(f'Usando imagen existente: {filename}')
         else:
             filename = take_photo(filename)
-            print(f'Foto guardada como {filename}')
+            print(f'Foto preparada como {filename}')
     except Exception as err:
         print(f'Error al preparar la imagen: {err}')
 
@@ -255,16 +313,13 @@ def main():
     print(f'\nResultado -> Dirección: {direccion} | CP: {cp}')
 
     if direccion and cp:
-        if not API_KEY:
-            print('No hay API key configurada; se omite la geocodificación.')
+        geo = obtener_coordenadas(direccion, cp)
+        if geo:
+            geo = asignar_prioridad(geo, 'media')
+            lista_paradas.append(geo)
+            print(f'Añadido a la ruta con prioridad {geo["prioridad"]}: {geo["address"]}')
         else:
-            geo = obtener_coordenadas(direccion, cp)
-            if geo:
-                geo = asignar_prioridad(geo, 'media')
-                lista_paradas.append(geo)
-                print(f'Añadido a la ruta con prioridad {geo["prioridad"]}: {geo["address"]}')
-            else:
-                print('No se pudo obtener coordenadas para la dirección proporcionada.')
+            print('No se pudo obtener coordenadas para la dirección proporcionada.')
     else:
         print('No hay dirección o código postal válidos para geocodificar.')
 

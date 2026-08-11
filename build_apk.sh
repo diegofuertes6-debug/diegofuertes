@@ -19,13 +19,20 @@ rsync -a --ignore-existing "$STAGING_DIR"/ "$LINUX_WORKDIR"/
 
 cd "$LINUX_WORKDIR"
 
+export PATH="$HOME/.local/bin:$PATH"
+
 echo "Iniciando buildozer (android debug) en $LINUX_WORKDIR..."
-if ! command -v buildozer >/dev/null 2>&1; then
-  echo "ERROR: buildozer no está instalado en este entorno. Instala buildozer en WSL o usa CI."
-  exit 2
+if ! python3 - <<'PY' >/dev/null 2>&1
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec('buildozer') else 1)
+PY
+then
+  echo "Buildozer no está instalado; lo instalamos automáticamente..."
+  python3 -m pip install --user --upgrade pip setuptools wheel Cython==0.29.33
+  python3 -m pip install --user buildozer==1.5.0
 fi
 
-buildozer -v android debug
+python3 -m buildozer -v android debug
 
 mkdir -p "$PROJECT_ROOT/bin"
 cp -f "$LINUX_WORKDIR/bin"/*.apk "$PROJECT_ROOT/bin"/ 2>/dev/null || true
