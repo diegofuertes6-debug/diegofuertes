@@ -16,7 +16,7 @@ android.archs = arm64-v8a
 android.allow_backup = False
 android.accept_sdk_license = True
 android.gradle_dependencies = androidx.core:core-ktx:1.13.0
-p4a.branch = master
+p4a.branch = v2024.01.21
 
 [buildozer]
 log_level = 2
