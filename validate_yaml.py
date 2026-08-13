@@ -8,6 +8,7 @@ except ImportError as exc:
 path = Path('.github/workflows/build-apk.yml')
 text = path.read_text(encoding='utf-8')
 parsed = yaml.safe_load(text)
+# PyYAML may parse the top-level `on` key as the boolean True.
 workflow_on = parsed.get('on', parsed.get(True, {}))
 push = workflow_on.get('push', {})
 push_branches = push.get('branches', [])
