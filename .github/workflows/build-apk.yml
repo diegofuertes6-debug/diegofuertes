@@ -2,8 +2,7 @@ name: Build APK (Debug)
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +12,8 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    env:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
 
     steps:
       - name: Checkout
@@ -58,38 +59,54 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel Cython==0.29.33
           python -m pip install buildozer==1.5.0
 
-      - name: Build debug APK
-        env:
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      - name: Show Android build configuration
         run: |
-          python -m buildozer android debug
+          grep -E '^(title|package.name|version|android.api|android.minapi|android.ndk|android.archs|p4a.branch)' buildozer.spec
 
-      - name: Verify APK artifact
+      - name: Build debug APK
         run: |
-          shopt -s nullglob
-          apks=(bin/*.apk)
-          if [ ${#apks[@]} -eq 0 ]; then
+          for attempt in 1 2 3; do
+            echo "Starting Buildozer attempt ${attempt}/3..."
+            if python -m buildozer -v android debug; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "Buildozer failed after 3 attempts."
+              exit 1
+            fi
+            echo "Retrying after a possible transient Buildozer failure..."
+            sleep 15
+          done
+
+      - name: Resolve APK artifact path
+        id: apk
+        run: |
+          apk_path="$(find bin -maxdepth 1 -type f -name '*-debug.apk' | sort | head -n 1)"
+          if [ -z "${apk_path}" ]; then
+            apk_path="$(find bin -maxdepth 1 -type f -name '*.apk' | sort | head -n 1)"
+          fi
+          if [ -z "${apk_path}" ]; then
             echo "No APK was generated in bin/."
             exit 1
           fi
-          printf 'Found APK: %s\n' "${apks[@]}"
+          echo "apk_path=${apk_path}" >> "${GITHUB_OUTPUT}"
+          printf 'Found APK: %s\n' "${apk_path}"
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: repartidor-apk-debug
-          path: |
-            bin/*.apk
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
 
       - name: Create GitHub Release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
           name: APK Debug ${{ github.run_number }}
           draft: false
           prerelease: false
-          files: |
-            bin/*.apk
+          files: ${{ steps.apk.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
