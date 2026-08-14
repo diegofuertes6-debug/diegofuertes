@@ -14,3 +14,7 @@ wsl_build_status.sh @diegofuertes6-debug
 # Codigo fuente principal
 main.py @diegofuertes6-debug
 repartidor.py @diegofuertes6-debug
+
+git add .
+git commit -m "Add release workflow"
+git push origin main

@@ -1,0 +1,5 @@
+cd /mnt/d/Repartidor
+. .venv/bin/activate
+python -m buildozer android debugcd /mnt/d/Repartidor
+. .venv/bin/activate
+python -m buildozer android debug

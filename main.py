@@ -1,236 +1,139 @@
-"""Aplicación principal del repartidor con autenticación y captura de fotos."""
-
-import hashlib
-import importlib
 import json
 import os
-
-import repartidor
+import webbrowser
 
 try:
-    App = importlib.import_module('kivy.app').App
-    BoxLayout = importlib.import_module('kivy.uix.boxlayout').BoxLayout
-    Label = importlib.import_module('kivy.uix.label').Label
-    Button = importlib.import_module('kivy.uix.button').Button
-    TextInput = importlib.import_module('kivy.uix.textinput').TextInput
-    get_platform = importlib.import_module('kivy.utils').platform
-    dp = importlib.import_module('kivy.metrics').dp
-    Window = importlib.import_module('kivy.core.window').Window
-except Exception:
-    class App:
-        def run(self):
-            raise RuntimeError('Kivy no está instalado en este entorno')
+    import requests
+except ImportError:  # pragma: no cover - depende del entorno
+    requests = None
 
-    class BoxLayout:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            self._widgets = []
+try:
+    from kivy.app import App
+    from kivy.uix.boxlayout import BoxLayout
+    from kivy.uix.button import Button
+    from kivy.uix.label import Label
+except ImportError:  # pragma: no cover - import para pruebas sin Kivy
+    App = object
+    BoxLayout = object
+    Button = object
+    Label = object
 
-        def add_widget(self, widget):
-            self._widgets.append(widget)
-
-        def clear_widgets(self):
-            self._widgets.clear()
-
-    class Label:
-        def __init__(self, **kwargs):
-            self.text = kwargs.get('text', '')
-            self.color = kwargs.get('color', (1, 1, 1, 1))
-
-        def bind(self, *_args, **_kwargs):
-            return None
-
-        def setter(self, attr):
-            def _setter(instance, value):
-                setattr(instance, attr, value)
-
-            return _setter
-
-    class Button:
-        def __init__(self, **kwargs):
-            self.text = kwargs.get('text', '')
-
-        def bind(self, *_args, **_kwargs):
-            return None
-
-    class TextInput:
-        def __init__(self, **kwargs):
-            self.text = ''
-            self.hint_text = kwargs.get('hint_text', '')
-            self.password = kwargs.get('password', False)
-
-    class Window:
-        softinput_mode = 'below_target'
-
-    def get_platform():
-        return ''
-
-    def dp(value):
-        return value
+CONFIG_FILE = 'webServerApiSettings.json'
 
 
-Window.softinput_mode = 'below_target'
+def _project_dir():
+    return os.path.dirname(os.path.abspath(__file__))
 
 
-class UserManager:
-    """Persistencia simple de usuarios con hash de contraseñas."""
-
-    def __init__(self):
-        self.file_path = self._get_storage_path()
-        self._ensure_path_exists()
-
-    def _get_storage_path(self):
-        if get_platform() == 'android':
-            try:
-                Python = importlib.import_module('com.chaquo.python').Python
-                context = Python.getPlatform().getApplication()
-                return os.path.join(str(context.getFilesDir().getAbsolutePath()), 'users.json')
-            except (ImportError, AttributeError):
-                return 'users.json'
-
-        return os.path.join(os.path.dirname(__file__), 'users.json')
-
-    def _ensure_path_exists(self):
-        directory = os.path.dirname(self.file_path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory, exist_ok=True)
-
-    def hash_password(self, password):
-        return hashlib.sha256(password.encode()).hexdigest()
-
-    def load_users(self):
-        if not os.path.exists(self.file_path):
-            return {}
-
-        try:
-            with open(self.file_path, 'r', encoding='utf-8') as handle:
-                return json.load(handle)
-        except (json.JSONDecodeError, IOError):
-            return {}
-
-    def save_users(self, users):
-        try:
-            with open(self.file_path, 'w', encoding='utf-8') as handle:
-                json.dump(users, handle, indent=4, ensure_ascii=False)
-            return True
-        except IOError as exc:
-            print(f'Error al guardar datos: {exc}')
-            return False
+def _config_path():
+    return os.path.join(_project_dir(), CONFIG_FILE)
 
 
-class RepartidorLayout(BoxLayout):
+class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.user_manager = UserManager()
-        self._setup_ui()
+        self.lista_paradas = []
+        self.api_key = self.cargar_api_key()
+        self.lbl = None
+        self.btn_ruta = None
 
-    def _setup_ui(self):
-        self.orientation = 'vertical'
-        self.padding = dp(25)
-        self.spacing = dp(15)
+    def build(self):
+        if not hasattr(self, 'user_data_dir') or not self.user_data_dir:
+            self.user_data_dir = _project_dir()
 
-        self.add_widget(Label(
-            text='SISTEMA REPARTIDOR',
-            font_size='26sp',
-            bold=True,
-            size_hint_y=None,
-            height=dp(100),
-            color=(0.12, 0.58, 0.95, 1),
-        ))
-
-        self.username = self._create_input('Usuario')
-        self.password = self._create_input('Contraseña', is_password=True)
-
-        self.add_widget(self.username)
-        self.add_widget(self.password)
-
-        self._add_button('INICIAR SESIÓN', self.do_login, (0.12, 0.58, 0.95, 1), dp(60))
-        self._add_button('¿No tienes cuenta? Regístrate', self.do_register, (0.95, 0.95, 0.95, 1), dp(40))
-        self._add_button('Tomar foto', self.take_photo, (0.2, 0.7, 0.2, 1), dp(50))
-
-        self.status = Label(text='Bienvenido', halign='center', font_size='14sp')
-        self.status.bind(size=self.status.setter('text_size'))
-        self.add_widget(self.status)
-
-    def _add_button(self, text, handler, background_color, height):
-        button = Button(
-            text=text,
-            bold=True,
-            size_hint_y=None,
-            height=height,
-            background_color=background_color,
-        )
-        button.bind(on_press=handler)
-        self.add_widget(button)
-        return button
-
-    def _create_input(self, hint, is_password=False):
-        return TextInput(
-            hint_text=hint,
-            password=is_password,
-            multiline=False,
-            write_tab=False,
-            size_hint_y=None,
-            height=dp(50),
-            padding=[dp(10), dp(12), dp(10), dp(12)],
+        layout = BoxLayout(orientation='vertical', padding=20, spacing=15)
+        self.lbl = Label(
+            text='App Repartidor v1.0\nListo para escanear',
+            halign='center',
+            font_size='18sp',
         )
 
-    def update_status(self, text, color=(1, 1, 1, 1)):
-        if hasattr(self, 'status'):
-            self.status.text = text
-            self.status.color = color
+        btn_foto = Button(
+            text='CAPTURAR DIRECCIÓN',
+            size_hint_y=None,
+            height='80dp',
+            background_color=(0.1, 0.6, 0.9, 1),
+        )
+        btn_foto.bind(on_press=self.tomar_foto)
 
-    def _get_credentials(self):
-        uid = self.username.text.strip() if hasattr(self, 'username') else ''
-        pwd = self.password.text.strip() if hasattr(self, 'password') else ''
-        return uid, pwd
+        self.btn_ruta = Button(
+            text='VER RUTA EN MAPS',
+            size_hint_y=None,
+            height='80dp',
+            disabled=True,
+        )
+        self.btn_ruta.bind(on_press=self.abrir_google_maps)
 
-    def do_login(self, _instance):
-        uid, pwd = self._get_credentials()
-        if not uid or not pwd:
-            return self.update_status('Complete usuario y contraseña', (1, 0.3, 0.3, 1))
+        layout.add_widget(self.lbl)
+        layout.add_widget(btn_foto)
+        layout.add_widget(self.btn_ruta)
+        return layout
 
-        users = self.user_manager.load_users()
-        user_data = users.get(uid)
-        expected_hash = self.user_manager.hash_password(pwd)
+    def cargar_api_key(self):
+        config_path = _config_path()
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict):
+                    return str(data.get('googleMapsApiKey', '') or '')
+            except (OSError, ValueError):
+                pass
+        return 'TU_API_KEY_AQUÍ'
 
-        if user_data and user_data.get('password') == expected_hash:
-            self.update_status(f'¡Bienvenido, {uid}!', (0.3, 1, 0.3, 1))
-        else:
-            self.update_status('Credenciales incorrectas', (1, 0.3, 0.3, 1))
-
-    def do_register(self, _instance):
-        uid, pwd = self._get_credentials()
-        if not uid or not pwd:
-            return self.update_status('Datos incompletos', (1, 0.3, 0.3, 1))
-
-        users = self.user_manager.load_users()
-        if uid in users:
-            self.update_status('El usuario ya existe', (1, 0.6, 0.2, 1))
+    def tomar_foto(self, *args):
+        if self.lbl is None:
             return
 
-        users[uid] = {'password': self.user_manager.hash_password(pwd)}
-        if self.user_manager.save_users(users):
-            self.update_status('Registro exitoso. Inicie sesión.', (0.3, 1, 0.3, 1))
-        else:
-            self.update_status('No se pudo guardar el usuario', (1, 0.3, 0.3, 1))
-
-    def take_photo(self, _instance):
+        filepath = os.path.join(self.user_data_dir, 'temp.jpg')
         try:
-            photo_path = repartidor.take_photo(repartidor.DEFAULT_PHOTO_FILENAME)
-            self.update_status(f'Foto lista: {photo_path}', (0.3, 1, 0.3, 1))
-        except Exception as exc:
-            self.update_status(f'Error al abrir cámara: {exc}', (1, 0.3, 0.3, 1))
+            from plyer import camera
+            camera.take_picture(filename=filepath, on_complete=self.procesar_OCR)
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            self.lbl.text = f'Error cámara: {exc}'
 
+    def procesar_OCR(self, filepath):
+        del filepath
+        direccion = 'Calle Ejemplo 123'
+        cp = '28001'
+        self.lbl.text = f'Buscando: {direccion}, {cp}'
+        self.obtener_geo(direccion, cp)
 
-class RepartidorApp(App):
-    def build(self):
-        return RepartidorLayout()
+    def obtener_geo(self, direccion, cp):
+        if requests is None:
+            self.lbl.text = 'Error de conexión con Google'
+            return
 
+        url = 'https://maps.googleapis.com/maps/api/geocode/json'
+        params = {'address': f'{direccion}, {cp}, España', 'key': self.api_key}
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get('status') == 'OK':
+                loc = payload['results'][0]['geometry']['location']
+                self.lista_paradas.append(f"{loc['lat']},{loc['lng']}")
+                self.btn_ruta.disabled = False
+                self.lbl.text = (
+                    f"Parada añadida:\n{payload['results'][0]['formatted_address']}"
+                )
+                return
+        except Exception:
+            pass
+        self.lbl.text = 'Error de conexión con Google'
 
-def start_from_android():
-    RepartidorApp().run()
+    def abrir_google_maps(self, *args):
+        if not self.lista_paradas:
+            return
+
+        destino = self.lista_paradas[-1]
+        url = f'https://www.google.com/maps/dir/?api=1&destination={destino}'
+        if len(self.lista_paradas) > 1:
+            url += f"&waypoints={'|'.join(self.lista_paradas[:-1])}"
+        webbrowser.open(url)
 
 
 if __name__ == '__main__':
-    start_from_android()
+    app = RepartidorApp()
+    if hasattr(app, 'run'):
+        app.run()

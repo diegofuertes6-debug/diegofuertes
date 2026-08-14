@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-set -eu
+set -euo pipefail
 
 PROJECT_ROOT="/mnt/d/Repartidor"
 WSL_WORKDIR="/home/$(whoami)/repartidor"
 
 export PATH="$HOME/.local/bin:$PATH"
 export PIP_BREAK_SYSTEM_PACKAGES=1
+export PIP_DISABLE_PIP_VERSION_CHECK=1
 
 if ! command -v cmake >/dev/null 2>&1; then
   python3 -m pip install --user --break-system-packages --upgrade cmake
@@ -45,8 +46,9 @@ while true; do
   echo "Reintentando buildozer por posible fallo transitorio de red..."
 done
 
-mkdir -p "$PROJECT_ROOT/bin"
+mkdir -p "$PROJECT_ROOT/bin" "$PROJECT_ROOT/din"
 cp -f "$WSL_WORKDIR"/bin/*.apk "$PROJECT_ROOT/bin"/
+cp -f "$WSL_WORKDIR"/bin/*.apk "$PROJECT_ROOT/din"/
 
-echo "APK generado en $PROJECT_ROOT/bin"
-ls -1 "$PROJECT_ROOT/bin"/*.apk
+echo "APK generado en $PROJECT_ROOT/bin y $PROJECT_ROOT/din"
+ls -1 "$PROJECT_ROOT/din"/*.apk
