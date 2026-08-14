@@ -2,6 +2,29 @@
 
 Aplicación Kivy para Android con login simple, toma de foto y generación de ruta.
 
+## Autenticación
+
+Al ejecutar el script principal (`python repartidor.py`) se activa un flujo de autenticación por consola:
+
+1. **Primera ejecución** – Si no existe ningún usuario registrado, se solicita directamente el **registro** (creación de cuenta).
+2. **Ejecución posterior** – Se muestra un menú con las opciones **Iniciar sesión** y **Registrarse**.
+3. **Solo tras autenticarse** correctamente el usuario accede al flujo normal de reparto.
+
+### Credenciales
+
+- Las contraseñas **nunca se almacenan en texto plano**; se guardan como hash **scrypt** (KDF resistente a fuerza bruta) con salt aleatorio en `.users.json` (fichero local, no versionado).
+- Para limpiar todos los usuarios elimina el fichero `.users.json` en la raíz del proyecto.
+
+### Mensajes de error
+
+| Situación | Mensaje |
+|-----------|---------|
+| Campo usuario vacío | `El nombre de usuario no puede estar vacío.` |
+| Campo contraseña vacío | `La contraseña no puede estar vacía.` |
+| Usuario no existe | `El usuario "X" no existe. ¿Deseas registrarte?` |
+| Contraseña incorrecta | `Contraseña incorrecta.` |
+| Usuario ya registrado | `El usuario "X" ya existe. Por favor inicia sesión.` |
+
 ## Compilar APK
 
 1. Instala Buildozer y las dependencias de Android.

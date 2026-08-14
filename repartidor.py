@@ -299,6 +299,12 @@ def generar_ruta_maps(paradas, modo='moto'):
 
 
 def main():
+    try:
+        from auth import run_auth_flow
+        run_auth_flow()
+    except (ImportError, KeyboardInterrupt):
+        pass
+
     filename = DEFAULT_PHOTO_FILENAME
     try:
         if os.path.exists(filename):
