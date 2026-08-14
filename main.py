@@ -4,21 +4,38 @@ import webbrowser
 
 try:
     import requests
-except ImportError:  # pragma: no cover - depende del entorno
+except ImportError:  # pragma: no cover
     requests = None
 
 try:
     from kivy.app import App
+    from kivy.clock import Clock
     from kivy.uix.boxlayout import BoxLayout
     from kivy.uix.button import Button
     from kivy.uix.label import Label
-except ImportError:  # pragma: no cover - import para pruebas sin Kivy
+    from kivy.uix.scrollview import ScrollView
+    from kivy.uix.spinner import Spinner
+    from kivy.uix.textinput import TextInput
+    from kivy.uix.popup import Popup
+    from kivy.uix.gridlayout import GridLayout
+except ImportError:  # pragma: no cover
     App = object
+    Clock = None
     BoxLayout = object
     Button = object
     Label = object
+    ScrollView = object
+    Spinner = object
+    TextInput = object
+    Popup = object
+    GridLayout = object
+
+import repartidor
 
 CONFIG_FILE = 'webServerApiSettings.json'
+
+_MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
+_PRIORIDAD_VALS = ['alta', 'media', 'baja']
 
 
 def _project_dir():
@@ -29,47 +46,31 @@ def _config_path():
     return os.path.join(_project_dir(), CONFIG_FILE)
 
 
+def _hora_actual():
+    """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
+    from datetime import datetime
+    return datetime.now().hour
+
+
 class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lista_paradas = []
-        self.api_key = self.cargar_api_key()
-        self.lbl = None
+        self.api_key = repartidor.API_KEY or self._cargar_api_key_legacy()
+        self.lbl_estado = None
         self.btn_ruta = None
+        self.lista_widget = None
+        self.spinner_modo = None
+        self.spinner_prioridad = None
+        self.txt_busqueda = None
+        self._permiso_geo = None  # None = no consultado, True/False
+        self._ubicacion_actual = None
+        self._clock_19 = None
 
-    def build(self):
-        if not hasattr(self, 'user_data_dir') or not self.user_data_dir:
-            self.user_data_dir = _project_dir()
-
-        layout = BoxLayout(orientation='vertical', padding=20, spacing=15)
-        self.lbl = Label(
-            text='App Repartidor v1.0\nListo para escanear',
-            halign='center',
-            font_size='18sp',
-        )
-
-        btn_foto = Button(
-            text='CAPTURAR DIRECCIÓN',
-            size_hint_y=None,
-            height='80dp',
-            background_color=(0.1, 0.6, 0.9, 1),
-        )
-        btn_foto.bind(on_press=self.tomar_foto)
-
-        self.btn_ruta = Button(
-            text='VER RUTA EN MAPS',
-            size_hint_y=None,
-            height='80dp',
-            disabled=True,
-        )
-        self.btn_ruta.bind(on_press=self.abrir_google_maps)
-
-        layout.add_widget(self.lbl)
-        layout.add_widget(btn_foto)
-        layout.add_widget(self.btn_ruta)
-        return layout
-
-    def cargar_api_key(self):
+    # ------------------------------------------------------------------
+    # Legacy API key loader (compatible con el JSON existente)
+    # ------------------------------------------------------------------
+    def _cargar_api_key_legacy(self):
         config_path = _config_path()
         if os.path.exists(config_path):
             try:
@@ -79,58 +80,281 @@ class RepartidorApp(App if App is not object else object):
                     return str(data.get('googleMapsApiKey', '') or '')
             except (OSError, ValueError):
                 pass
-        return 'TU_API_KEY_AQUÍ'
+        return ''
 
-    def tomar_foto(self, *args):
-        if self.lbl is None:
-            return
+    # ------------------------------------------------------------------
+    # Build UI
+    # ------------------------------------------------------------------
+    def build(self):
+        if not hasattr(self, 'user_data_dir') or not self.user_data_dir:
+            self.user_data_dir = _project_dir()
 
-        filepath = os.path.join(self.user_data_dir, 'temp.jpg')
+        root = BoxLayout(orientation='vertical', padding=10, spacing=8)
+
+        # ---- Estado / info ----
+        self.lbl_estado = Label(
+            text='App Repartidor\nEsperando permisos…',
+            halign='center',
+            font_size='15sp',
+            size_hint_y=None,
+            height='60dp',
+        )
+        root.add_widget(self.lbl_estado)
+
+        # ---- Botones entrada de parada ----
+        fila_entrada = BoxLayout(size_hint_y=None, height='50dp', spacing=6)
+        btn_camara = Button(
+            text='📷 Cámara',
+            background_color=(0.1, 0.6, 0.9, 1),
+        )
+        btn_camara.bind(on_press=self.escanear_camara)
+
+        btn_micro = Button(
+            text='🎙 Micrófono',
+            background_color=(0.2, 0.7, 0.3, 1),
+        )
+        btn_micro.bind(on_press=self.dictar_microfono)
+
+        fila_entrada.add_widget(btn_camara)
+        fila_entrada.add_widget(btn_micro)
+        root.add_widget(fila_entrada)
+
+        # ---- Búsqueda manual ----
+        fila_buscar = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
+        self.txt_busqueda = TextInput(
+            hint_text='Escribir dirección…',
+            multiline=False,
+            size_hint_x=0.75,
+        )
+        btn_buscar = Button(
+            text='🔍 Buscar',
+            size_hint_x=0.25,
+            background_color=(0.8, 0.5, 0.1, 1),
+        )
+        btn_buscar.bind(on_press=self.buscar_manual)
+        fila_buscar.add_widget(self.txt_busqueda)
+        fila_buscar.add_widget(btn_buscar)
+        root.add_widget(fila_buscar)
+
+        # ---- Selección prioridad y modo transporte ----
+        fila_opts = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
+        fila_opts.add_widget(Label(text='Prioridad:', size_hint_x=0.3, font_size='13sp'))
+        self.spinner_prioridad = Spinner(
+            text='media',
+            values=['alta', 'media', 'baja'],
+            size_hint_x=0.35,
+        )
+        fila_opts.add_widget(self.spinner_prioridad)
+        fila_opts.add_widget(Label(text='Modo:', size_hint_x=0.15, font_size='13sp'))
+        self.spinner_modo = Spinner(
+            text='Moto',
+            values=['A pie', 'Coche', 'Moto'],
+            size_hint_x=0.2,
+        )
+        self.spinner_modo.bind(text=self._on_modo_cambio)
+        fila_opts.add_widget(self.spinner_modo)
+        root.add_widget(fila_opts)
+
+        # ---- Lista de paradas ----
+        scroll = ScrollView(size_hint=(1, 1))
+        self.lista_widget = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            spacing=4,
+        )
+        self.lista_widget.bind(minimum_height=self.lista_widget.setter('height'))
+        scroll.add_widget(self.lista_widget)
+        root.add_widget(scroll)
+
+        # ---- Botón Ver Ruta ----
+        self.btn_ruta = Button(
+            text='🗺 VER RUTA EN MAPS',
+            size_hint_y=None,
+            height='56dp',
+            disabled=True,
+            background_color=(0.8, 0.1, 0.1, 1),
+        )
+        self.btn_ruta.bind(on_press=self.abrir_google_maps)
+        root.add_widget(self.btn_ruta)
+
+        # Inicializar geolocalización y reloj 19:00
+        Clock.schedule_once(self._iniciar_geolocalizacion, 0.5)
+        self._programar_reloj_19()
+
+        return root
+
+    # ------------------------------------------------------------------
+    # Geolocalización
+    # ------------------------------------------------------------------
+    def _iniciar_geolocalizacion(self, *_args):
+        concedido = repartidor.solicitar_permiso_geolocalizacion()
+        self._permiso_geo = concedido
+        if concedido:
+            self._set_estado('Permiso de ubicación concedido ✓')
+            self._actualizar_ubicacion()
+        else:
+            self._set_estado(
+                'Permiso de ubicación denegado.\n'
+                'La ruta se calculará sin tu posición actual.'
+            )
+
+    def _actualizar_ubicacion(self, *_args):
+        loc = repartidor.obtener_ubicacion_actual()
+        if loc:
+            self._ubicacion_actual = loc
+            self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
+
+    # ------------------------------------------------------------------
+    # Reloj 19:00
+    # ------------------------------------------------------------------
+    def _programar_reloj_19(self):
+        """Recalcula la ruta cada minuto para aplicar la regla de las 19:00."""
+        if Clock:
+            self._clock_19 = Clock.schedule_interval(self._verificar_hora_19, 60)
+
+    def _verificar_hora_19(self, *_args):
+        hora = _hora_actual()
+        if hora >= 19 and self.lista_paradas:
+            self._set_estado('🕖 Son las 19:00 – reordenando por prioridad…')
+            self._refrescar_lista()
+
+    # ------------------------------------------------------------------
+    # Entrada de paradas
+    # ------------------------------------------------------------------
+    def escanear_camara(self, *_args):
+        """Toma una foto, extrae la dirección con OCR y añade la parada."""
+        self._set_estado('Abriendo cámara…')
+        filepath = os.path.join(self.user_data_dir, 'temp_scan.jpg')
         try:
             from plyer import camera
-            camera.take_picture(filename=filepath, on_complete=self.procesar_OCR)
-        except Exception as exc:  # pragma: no cover - depende del entorno
-            self.lbl.text = f'Error cámara: {exc}'
+            camera.take_picture(filename=filepath, on_complete=self._procesar_foto)
+        except Exception as exc:
+            self._set_estado(f'Error cámara: {exc}')
+            self._procesar_foto(filepath)  # intenta con cv2 / ruta existente
 
-    def procesar_OCR(self, filepath):
-        del filepath
-        direccion = 'Calle Ejemplo 123'
-        cp = '28001'
-        self.lbl.text = f'Buscando: {direccion}, {cp}'
-        self.obtener_geo(direccion, cp)
+    def _procesar_foto(self, filepath):
+        self._set_estado('Procesando imagen…')
+        resultado = repartidor.take_photo(filepath)
+        direccion, cp = repartidor.procesar_imagen(resultado)
+        if direccion and cp:
+            self._geocodificar_y_añadir(f'{direccion}, {cp}')
+        elif direccion:
+            self._geocodificar_y_añadir(direccion)
+        else:
+            self._set_estado('No se detectó dirección en la imagen.')
 
-    def obtener_geo(self, direccion, cp):
-        if requests is None:
-            self.lbl.text = 'Error de conexión con Google'
+    def dictar_microfono(self, *_args):
+        """Dicta una dirección por voz y añade la parada."""
+        self._set_estado('Escuchando micrófono…')
+        texto = repartidor.dictar_direccion()
+        if texto:
+            self._geocodificar_y_añadir(texto)
+        else:
+            self._set_estado(
+                'No se captó voz.\n'
+                'Asegúrate de tener micrófono y SpeechRecognition instalado.'
+            )
+
+    def buscar_manual(self, *_args):
+        """Geocodifica la dirección escrita manualmente."""
+        texto = (self.txt_busqueda.text or '').strip() if self.txt_busqueda else ''
+        if not texto:
+            self._set_estado('Escribe una dirección primero.')
             return
+        self._geocodificar_y_añadir(texto)
+        if self.txt_busqueda:
+            self.txt_busqueda.text = ''
 
-        url = 'https://maps.googleapis.com/maps/api/geocode/json'
-        params = {'address': f'{direccion}, {cp}, España', 'key': self.api_key}
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get('status') == 'OK':
-                loc = payload['results'][0]['geometry']['location']
-                self.lista_paradas.append(f"{loc['lat']},{loc['lng']}")
-                self.btn_ruta.disabled = False
-                self.lbl.text = (
-                    f"Parada añadida:\n{payload['results'][0]['formatted_address']}"
-                )
-                return
-        except Exception:
-            pass
-        self.lbl.text = 'Error de conexión con Google'
+    # ------------------------------------------------------------------
+    # Geocodificación y gestión de paradas
+    # ------------------------------------------------------------------
+    def _geocodificar_y_añadir(self, texto):
+        self._set_estado(f'Buscando: {texto}…')
+        parada = repartidor.buscar_direccion_texto(texto)
+        if parada is None:
+            # Sin API key, crear parada manual con coordenadas vacías
+            parada = {'address': texto, 'lat': None, 'lng': None, 'estado': 'pendiente'}
+        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        repartidor.asignar_prioridad(parada, prioridad)
+        self.lista_paradas.append(parada)
+        self._set_estado(f'Parada añadida: {parada.get("address", texto)}')
+        self._refrescar_lista()
 
-    def abrir_google_maps(self, *args):
+    def _refrescar_lista(self):
+        if self.lista_widget is None:
+            return
+        self.lista_widget.clear_widgets()
+
+        modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
+        loc = self._ubicacion_actual or {}
+        origen_lat = loc.get('lat')
+        origen_lng = loc.get('lng')
+        hora = _hora_actual()
+
+        paradas_ord = repartidor.priorizar_paradas(
+            self.lista_paradas, modo=modo,
+            hora_actual=hora,
+            origen_lat=origen_lat, origen_lng=origen_lng,
+        )
+
+        colores = {'alta': (0.8, 0.1, 0.1, 1), 'media': (0.9, 0.6, 0.1, 1), 'baja': (0.2, 0.6, 0.2, 1)}
+        for idx, parada in enumerate(paradas_ord):
+            fila = BoxLayout(size_hint_y=None, height='44dp', spacing=4)
+            lbl = Label(
+                text=f"[{parada.get('prioridad','?')}] {parada.get('address','Sin dirección')}",
+                halign='left',
+                font_size='12sp',
+                size_hint_x=0.8,
+                text_size=(None, None),
+            )
+            color = colores.get(parada.get('prioridad', 'media'), (0.5, 0.5, 0.5, 1))
+            btn_del = Button(
+                text='✕',
+                size_hint_x=0.2,
+                background_color=color,
+            )
+            real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
+            btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
+            fila.add_widget(lbl)
+            fila.add_widget(btn_del)
+            self.lista_widget.add_widget(fila)
+
+        if self.btn_ruta is not None:
+            self.btn_ruta.disabled = not bool(self.lista_paradas)
+
+    def _eliminar_parada(self, indice):
+        repartidor.eliminar_parada(self.lista_paradas, indice)
+        self._refrescar_lista()
+
+    def _on_modo_cambio(self, *_args):
+        self._refrescar_lista()
+
+    # ------------------------------------------------------------------
+    # Abrir Maps
+    # ------------------------------------------------------------------
+    def abrir_google_maps(self, *_args):
         if not self.lista_paradas:
             return
+        modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
+        loc = self._ubicacion_actual or {}
+        url = repartidor.generar_ruta_maps(
+            self.lista_paradas,
+            modo=modo,
+            hora_actual=_hora_actual(),
+            origen_lat=loc.get('lat'),
+            origen_lng=loc.get('lng'),
+        )
+        if url.startswith('http'):
+            webbrowser.open(url)
+        else:
+            self._set_estado(url)
 
-        destino = self.lista_paradas[-1]
-        url = f'https://www.google.com/maps/dir/?api=1&destination={destino}'
-        if len(self.lista_paradas) > 1:
-            url += f"&waypoints={'|'.join(self.lista_paradas[:-1])}"
-        webbrowser.open(url)
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _set_estado(self, texto):
+        if self.lbl_estado is not None:
+            self.lbl_estado.text = str(texto)
 
 
 if __name__ == '__main__':

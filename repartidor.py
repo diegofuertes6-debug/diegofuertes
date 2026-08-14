@@ -1,9 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Aplicación de reparto robusta para escritorio y Android."""
+"""Aplicación de reparto robusta para escritorio y Android.
+
+Geolocalización, gestión de paradas con prioridad y optimización de rutas.
+
+Cómo funciona la regla de las 19:00
+-------------------------------------
+- La hora local del dispositivo se consulta con ``datetime.now().hour``.
+- Si la hora actual es >= 19, ``priorizar_paradas`` reordena primero por
+  prioridad (alta > media > baja) y dentro de cada grupo conserva el orden
+  de menor distancia acumulada (nearest-neighbor greedy).
+- Si la app se abre después de las 19:00 la política se aplica desde el
+  primer cálculo. El recálculo también ocurre cuando el usuario añade o
+  elimina paradas o cambia el modo de transporte.
+
+Modos de transporte reconocidos: ``'pie'``, ``'coche'``, ``'moto'``.
+"""
 import json
 import os
 import re
 from datetime import datetime
+import math
 
 DEFAULT_PHOTO_FILENAME = 'foto_direccion.jpg'
 API_KEY_ENV_VAR = 'GOOGLE_MAPS_API_KEY'
@@ -241,7 +257,7 @@ def obtener_coordenadas(direccion, cp):
 
     if res.get('status') == 'OK' and res.get('results'):
         loc = res['results'][0]['geometry']['location']
-        return {'lat': loc['lat'], 'lng': loc['lng'], 'address': full_address, 'prioridad': 'media'}
+        return {'lat': loc['lat'], 'lng': loc['lng'], 'address': full_address, 'prioridad': 'media', 'estado': 'pendiente'}
     return None
 
 
@@ -255,7 +271,259 @@ def asignar_prioridad(parada, prioridad):
     return parada
 
 
-def priorizar_paradas(paradas, modo='moto'):
+def _haversine(lat1, lng1, lat2, lng2):
+    """Distancia en km entre dos puntos (fórmula haversine)."""
+    r = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _nearest_neighbor(paradas, origen_lat=None, origen_lng=None):
+    """Ordena *paradas* con la heurística del vecino más cercano.
+
+    Si no se dispone de coordenadas válidas en una parada se mantiene su
+    posición relativa.  El punto de inicio puede ser la posición actual del
+    repartidor (``origen_lat``/``origen_lng``) o, si es ``None``, el primer
+    elemento de la lista.
+    """
+    candidatos = [p for p in paradas if isinstance(p.get('lat'), (int, float))
+                  and isinstance(p.get('lng'), (int, float))]
+    sin_coords = [p for p in paradas if p not in candidatos]
+
+    if not candidatos:
+        return list(paradas)
+
+    if origen_lat is None or origen_lng is None:
+        cur_lat = candidatos[0]['lat']
+        cur_lng = candidatos[0]['lng']
+        pendientes = candidatos[1:]
+        ruta = [candidatos[0]]
+    else:
+        cur_lat, cur_lng = origen_lat, origen_lng
+        pendientes = list(candidatos)
+        ruta = []
+
+    while pendientes:
+        mas_cercana = min(pendientes, key=lambda p: _haversine(cur_lat, cur_lng, p['lat'], p['lng']))
+        ruta.append(mas_cercana)
+        pendientes.remove(mas_cercana)
+        cur_lat, cur_lng = mas_cercana['lat'], mas_cercana['lng']
+
+    return ruta + sin_coords
+
+
+# ---------------------------------------------------------------------------
+# Geolocalización del repartidor
+# ---------------------------------------------------------------------------
+
+def solicitar_permiso_geolocalizacion():
+    """Solicita el permiso de localización en Android.
+
+    En plataformas no-Android (escritorio / tests) devuelve ``True``
+    directamente sin solicitar nada.
+
+    Returns:
+        bool: ``True`` si el permiso fue concedido o no se necesita solicitar,
+              ``False`` si el permiso fue denegado.
+    """
+    if not _is_android():
+        return True
+
+    try:
+        from android.permissions import (
+            Permission,
+            check_permission,
+            request_permissions,
+        )
+
+        perm = Permission.ACCESS_FINE_LOCATION
+        if check_permission(perm):
+            return True
+        request_permissions([perm])
+        return check_permission(perm)
+    except (ImportError, AttributeError) as exc:
+        print(f'No se pudo solicitar permiso de geolocalización: {exc}')
+        return False
+
+
+def obtener_ubicacion_actual():
+    """Devuelve la ubicación GPS actual como ``{'lat': float, 'lng': float}`` o ``None``.
+
+    En Android usa ``plyer.gps``; en escritorio usa ``requests`` contra la
+    API de geolocalización de Google si hay API key, y como último recurso
+    devuelve ``None``.
+
+    El permiso de geolocalización debe estar concedido antes de llamar a
+    esta función (ver ``solicitar_permiso_geolocalizacion``).
+    """
+    if _is_android():
+        try:
+            from plyer import gps
+
+            gps.configure(on_location=lambda **_: None, on_status=lambda *_: None)
+            gps.start(minTime=0, minDistance=0)
+            import time
+            time.sleep(1)
+            provider = gps.location
+            if provider and provider.get('lat') is not None:
+                return {'lat': provider['lat'], 'lng': provider['lon']}
+        except Exception as exc:
+            print(f'No se pudo obtener la ubicación en Android: {exc}')
+        return None
+
+    # Escritorio: intentar geolocalización por IP (sin permiso necesario)
+    if requests is None:
+        return None
+    try:
+        resp = requests.get('https://ipapi.co/json/', timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('latitude') and data.get('longitude'):
+            return {'lat': float(data['latitude']), 'lng': float(data['longitude'])}
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Speech-to-text (micrófono)
+# ---------------------------------------------------------------------------
+
+def dictar_direccion():
+    """Intenta capturar una dirección por micrófono vía speech-to-text.
+
+    Estrategia de fallback:
+    1. Android: ``android.speech`` intent (si está disponible).
+    2. Escritorio: biblioteca ``SpeechRecognition`` con Google Web Speech API.
+    3. Si ninguna opción está disponible, devuelve cadena vacía y muestra
+       un mensaje informativo.
+
+    Returns:
+        str: Texto dictado o ``''`` si no fue posible.
+    """
+    if _is_android():
+        try:
+            from jnius import autoclass, cast
+
+            Intent = autoclass('android.content.Intent')
+            RecognizerIntent = autoclass('android.speech.RecognizerIntent')
+            intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, 'es-ES')
+            from android import activity
+            activity.startActivityForResult(intent, 1001)
+            return ''
+        except Exception as exc:
+            print(f'No se pudo iniciar reconocimiento de voz en Android: {exc}')
+            return ''
+
+    try:
+        import speech_recognition as sr
+
+        recognizer = sr.Recognizer()
+        with sr.Microphone() as source:
+            print('Escuchando dirección…')
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+        text = recognizer.recognize_google(audio, language='es-ES')
+        return text.strip()
+    except ImportError:
+        print('speech_recognition no está instalado; usa pip install SpeechRecognition.')
+    except Exception as exc:
+        print(f'Error en reconocimiento de voz: {exc}')
+    return ''
+
+
+# ---------------------------------------------------------------------------
+# Búsqueda manual de dirección
+# ---------------------------------------------------------------------------
+
+def buscar_direccion_texto(texto):
+    """Geocodifica *texto* libre (dirección sin código postal separado).
+
+    Returns:
+        dict or None: Parada con campos ``lat``, ``lng``, ``address``,
+                      ``prioridad`` o ``None`` si no se pudo resolver.
+    """
+    texto = (texto or '').strip()
+    if not texto:
+        return None
+
+    if requests is None:
+        print('requests no está instalado.')
+        return None
+    if not API_KEY:
+        print('No hay API key configurada; se omite la geocodificación.')
+        return None
+
+    url = 'https://maps.googleapis.com/maps/api/geocode/json'
+    params = {'address': texto, 'key': API_KEY}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        res = resp.json()
+    except Exception as exc:
+        print(f'Error al geocodificar "{texto}": {exc}')
+        return None
+
+    if res.get('status') == 'OK' and res.get('results'):
+        loc = res['results'][0]['geometry']['location']
+        return {
+            'lat': loc['lat'],
+            'lng': loc['lng'],
+            'address': res['results'][0].get('formatted_address', texto),
+            'prioridad': 'media',
+            'estado': 'pendiente',
+        }
+    print(f'No se encontraron resultados para "{texto}".')
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Eliminar parada
+# ---------------------------------------------------------------------------
+
+def eliminar_parada(paradas, indice):
+    """Elimina la parada en *indice* de la lista *paradas* in-place.
+
+    Returns:
+        bool: ``True`` si se eliminó, ``False`` si el índice es inválido.
+    """
+    if not isinstance(paradas, list) or not (0 <= indice < len(paradas)):
+        return False
+    paradas.pop(indice)
+    return True
+
+
+def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
+    """Ordena las paradas aplicando optimización de ruta y regla de las 19:00.
+
+    Regla de las 19:00 (hora local)
+    --------------------------------
+    Si ``hora_actual`` (entero 0-23) es >= 19, las paradas **pendientes** se
+    reordenan primero por prioridad (alta > media > baja) y dentro de cada
+    grupo de prioridad se aplica la heurística del vecino más cercano para
+    minimizar la distancia recorrida.
+
+    Antes de las 19:00 se aplica solo la heurística del vecino más cercano
+    teniendo en cuenta el modo de transporte (pie/coche/moto no cambia la
+    heurística pero el parámetro queda disponible para futuras integraciones
+    con la Directions API).
+
+    Args:
+        paradas: Lista de dicts con al menos ``lat``, ``lng`` y ``prioridad``.
+        modo: ``'pie'``, ``'coche'`` o ``'moto'`` (por defecto ``'moto'``).
+        hora_actual: Hora local (0-23).  Si es ``None`` se usa
+            ``datetime.now().hour``.
+        origen_lat: Latitud actual del repartidor (opcional).
+        origen_lng: Longitud actual del repartidor (opcional).
+
+    Returns:
+        list: Nueva lista de paradas ordenadas.
+    """
     if not paradas:
         return []
 
@@ -263,32 +531,60 @@ def priorizar_paradas(paradas, modo='moto'):
     if modo not in {'pie', 'moto', 'coche'}:
         modo = 'moto'
 
-    orden = {'alta': 0, 'media': 1, 'baja': 2}
-    paradas_ordenadas = sorted(
-        (p for p in paradas if isinstance(p, dict)),
-        key=lambda p: orden.get(p.get('prioridad', 'media'), 1)
-    )
+    if hora_actual is None:
+        hora_actual = datetime.now().hour
 
-    if datetime.now().hour >= 19:
-        paradas_altas = [p for p in paradas_ordenadas if p.get('prioridad') == 'alta']
-        paradas_restantes = [p for p in paradas_ordenadas if p.get('prioridad') != 'alta']
-        return paradas_altas + paradas_restantes
+    paradas_validas = [p for p in paradas if isinstance(p, dict)]
 
-    return paradas_ordenadas
+    if hora_actual >= 19:
+        # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
+        orden = {'alta': 0, 'media': 1, 'baja': 2}
+        grupos = {'alta': [], 'media': [], 'baja': []}
+        for p in paradas_validas:
+            grupos[p.get('prioridad', 'media')].append(p)
+
+        resultado = []
+        cur_lat, cur_lng = origen_lat, origen_lng
+        for nivel in ('alta', 'media', 'baja'):
+            grupo_ordenado = _nearest_neighbor(grupos[nivel], cur_lat, cur_lng)
+            if grupo_ordenado:
+                resultado.extend(grupo_ordenado)
+                ultimo = grupo_ordenado[-1]
+                if isinstance(ultimo.get('lat'), (int, float)):
+                    cur_lat, cur_lng = ultimo['lat'], ultimo['lng']
+        return resultado
+
+    # Antes de las 19:00: optimización por vecino más cercano globalmente
+    return _nearest_neighbor(paradas_validas, origen_lat, origen_lng)
 
 
-def generar_ruta_maps(paradas, modo='moto'):
+def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
+    """Genera la URL de Google Maps con las paradas optimizadas.
+
+    Args:
+        paradas: Lista de dicts de paradas.
+        modo: Modo de transporte (``'pie'``, ``'coche'``, ``'moto'``).
+        hora_actual: Hora local (0-23) para la regla de las 19:00.
+        origen_lat: Latitud actual del repartidor (opcional).
+        origen_lng: Longitud actual del repartidor (opcional).
+
+    Returns:
+        str: URL de Google Maps o mensaje de error.
+    """
     if not paradas:
         return 'No hay paradas'
 
     paradas_priorizadas = [
-        p for p in priorizar_paradas(paradas, modo)
+        p for p in priorizar_paradas(paradas, modo, hora_actual, origen_lat, origen_lng)
         if isinstance(p.get('lat'), (int, float)) and isinstance(p.get('lng'), (int, float))
     ]
     if not paradas_priorizadas:
         return 'No hay paradas con coordenadas válidas'
 
-    base_url = 'https://www.google.com/maps/dir/?api=1'
+    travelmode_map = {'pie': 'walking', 'coche': 'driving', 'moto': 'driving'}
+    travelmode = travelmode_map.get((modo or 'moto').lower().strip(), 'driving')
+
+    base_url = f'https://www.google.com/maps/dir/?api=1&travelmode={travelmode}'
     destino = f'&destination={paradas_priorizadas[-1]["lat"]},{paradas_priorizadas[-1]["lng"]}'
     waypoints = ''
     if len(paradas_priorizadas) > 1:

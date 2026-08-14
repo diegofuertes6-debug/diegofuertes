@@ -1,31 +1,129 @@
 # Repartidor
 
-Aplicación Kivy para Android con login simple, toma de foto y generación de ruta.
+Aplicación Kivy para Android con login, geolocalización, gestión de paradas con prioridad y optimización de rutas.
+
+## Características
+
+- **Geolocalización**: muestra la posición actual del repartidor (requiere permiso de ubicación).
+- **Entrada de paradas** por tres canales:
+  - 📷 Cámara: toma una foto y extrae la dirección por OCR.
+  - 🎙 Micrófono: dicta la dirección por voz (speech-to-text).
+  - 🔍 Búsqueda manual: escribe la dirección directamente.
+- **Prioridades**: asigna prioridad alta / media / baja a cada parada.
+- **Modo de transporte**: a pie / coche / moto.
+- **Optimización de ruta**: heurística del vecino más cercano para minimizar la distancia recorrida.
+- **Regla de las 19:00**: a partir de las 19:00 hora local las paradas pendientes se reordenan primero por prioridad (alta > media > baja) y dentro de cada grupo se aplica la optimización de vecino más cercano.
+
+---
+
+## Configuración de la API key de Google Maps
+
+1. Crea (o edita) el archivo `webServerApiSettings.json` en la raíz del proyecto:
+
+   ```json
+   {
+     "googleMapsApiKey": "TU_API_KEY_AQUÍ"
+   }
+   ```
+
+2. Alternativamente, define la variable de entorno `GOOGLE_MAPS_API_KEY` o añade la clave en un archivo `.env`:
+
+   ```
+   GOOGLE_MAPS_API_KEY=TU_API_KEY_AQUÍ
+   ```
+
+3. La API key debe tener habilitadas las APIs **Geocoding** y **Maps JavaScript**.
+
+> **Nota**: sin API key la app sigue funcionando pero no geocodifica las direcciones; las paradas se guardan solo con el texto introducido.
+
+---
+
+## Permisos necesarios
+
+### Android (`buildozer.spec`)
+
+| Permiso | Para qué se usa |
+|---|---|
+| `INTERNET` | Llamadas a la API de geocodificación de Google Maps |
+| `CAMERA` | Captura de foto para OCR de dirección |
+| `ACCESS_FINE_LOCATION` | Obtener la posición GPS del repartidor |
+| `WRITE_EXTERNAL_STORAGE` | Guardar la foto temporal en disco |
+| `READ_EXTERNAL_STORAGE` | Leer la foto guardada para procesarla |
+| `RECORD_AUDIO` | Reconocimiento de voz (micrófono) |
+
+Los permisos `ACCESS_FINE_LOCATION` y `CAMERA` se solicitan en tiempo de ejecución. Si el usuario los deniega, la app muestra un mensaje claro y continúa sin esa funcionalidad.
+
+---
+
+## Uso de cámara y micrófono
+
+### Cámara
+- Pulsa el botón **📷 Cámara**.
+- En Android abre la cámara nativa y guarda la foto.
+- En escritorio intenta capturar un fotograma con OpenCV (`cv2`).
+- El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
+
+### Micrófono
+- Pulsa el botón **🎙 Micrófono**.
+- En Android lanza el intent `ACTION_RECOGNIZE_SPEECH` del sistema.
+- En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.
+  - Instálala con: `pip install SpeechRecognition pyaudio`
+- Si el reconocimiento falla, la app muestra un mensaje y puedes usar la búsqueda manual.
+
+---
+
+## Flujo de priorización de las 19:00
+
+La hora local se obtiene con `datetime.now().hour`.
+
+| Momento | Comportamiento |
+|---|---|
+| Antes de las 19:00 | Las paradas se ordenan por la heurística del vecino más cercano (minimiza distancia total). |
+| A partir de las 19:00 | Se aplica la **regla de las 19:00**: primero todas las paradas de prioridad **alta**, luego **media**, luego **baja**. Dentro de cada grupo sigue aplicándose la heurística del vecino más cercano. |
+
+El recálculo se dispara automáticamente:
+- Cada minuto (reloj interno de la app).
+- Al añadir o eliminar una parada.
+- Al cambiar el modo de transporte.
+- Al abrir la app si ya son las 19:00 o más.
+
+---
 
 ## Compilar APK
 
 1. Instala Buildozer y las dependencias de Android.
 2. Desde la carpeta del proyecto ejecuta:
-   - `buildozer android debug`
+
+   ```bash
+   buildozer android debug
+   ```
 
 ## Generar APK firmada y publicarla en GitHub
 
 1. Genera un keystore localmente:
-   - `keytool -genkeypair -v -keystore release.jks -alias repartidor -keyalg RSA -keysize 2048 -validity 10000`
-2. Guarda la contraseña y el alias.
-3. Crea estos secrets en GitHub:
+
+   ```bash
+   keytool -genkeypair -v -keystore release.jks -alias repartidor -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. Crea estos secrets en GitHub:
    - `ANDROID_KEYSTORE_BASE64`
    - `ANDROID_KEY_ALIAS`
    - `ANDROID_KEYSTORE_PASSWORD`
    - `ANDROID_KEY_PASSWORD`
-4. Codifica el keystore en base64 para el secret:
-   - `base64 -w 0 release.jks` (Linux/macOS)
-   - `certutil -encode release.jks release.txt` y usa el contenido del txt (Windows PowerShell)
-5. Haz push a `main` o `master` o ejecuta el workflow manualmente desde la pestaña Actions.
-6. La APK firmada quedará disponible como artefacto y como release en GitHub.
 
-## Notas
+3. Codifica el keystore en base64:
 
-- La cámara se intenta abrir de forma nativa en Android mediante la intención del sistema.
-- Si el entorno no tiene la cámara o permisos, la app mostrará un mensaje en pantalla.
-- Para descargar la APK final, ve a la pestaña Releases o Actions > artefactos del workflow.
+   ```bash
+   base64 -w 0 release.jks   # Linux/macOS
+   ```
+
+4. Haz push a `main`/`master` o lanza el workflow manualmente.
+
+---
+
+## Ejecutar pruebas
+
+```bash
+python -m unittest discover tests -v
+```
