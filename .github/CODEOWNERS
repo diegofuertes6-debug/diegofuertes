@@ -15,6 +15,11 @@ wsl_build_status.sh @diegofuertes6-debug
 main.py @diegofuertes6-debug
 repartidor.py @diegofuertes6-debug
 
-git add .
-git commit -m "Add release workflow"
+git pull --rebase origin main
 git push origin main
+
+git add .
+git rebase --continue
+git push origin main
+
+git status
