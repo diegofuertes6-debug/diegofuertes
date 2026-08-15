@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - copilot/fix-github-actions-job
       - feature/enrrutador-prioridades
 
 jobs:
