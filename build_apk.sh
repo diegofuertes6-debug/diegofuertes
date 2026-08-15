@@ -8,7 +8,6 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINUX_WORKDIR="/home/$(whoami)/repartidor"
 STAGING_DIR="/tmp/repartidor-build-src"
-VENV_DIR="$LINUX_WORKDIR/.venv"
 
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
@@ -23,25 +22,24 @@ cd "$LINUX_WORKDIR"
 export PATH="$HOME/.local/bin:$PATH"
 export PIP_BREAK_SYSTEM_PACKAGES=1
 
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-  python3 -m venv "$VENV_DIR"
+if command -v python3.11 >/dev/null 2>&1; then
+  HOST_PYTHON=python3.11
+else
+  HOST_PYTHON=python3
 fi
 
-VENV_PYTHON="$VENV_DIR/bin/python"
-VENV_PIP="$VENV_DIR/bin/pip"
-
-echo "Iniciando buildozer (android debug) en $LINUX_WORKDIR usando entorno virtual..."
-if ! "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+echo "Iniciando buildozer (android debug) en $LINUX_WORKDIR con $HOST_PYTHON..."
+if ! "$HOST_PYTHON" - <<'PY' >/dev/null 2>&1
 import importlib.util
 raise SystemExit(0 if importlib.util.find_spec('buildozer') else 1)
 PY
 then
-  echo "Buildozer no está instalado; lo instalamos automáticamente en el entorno virtual..."
-  "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel Cython==0.29.33
-  "$VENV_PYTHON" -m pip install buildozer==1.5.0
+  echo "Buildozer no está instalado; lo instalamos automáticamente para el usuario..."
+  "$HOST_PYTHON" -m pip install --user --upgrade pip setuptools wheel Cython==0.29.33
+  "$HOST_PYTHON" -m pip install --user buildozer==1.5.0
 fi
 
-"$VENV_PYTHON" -m buildozer -v android debug
+"$HOST_PYTHON" -m buildozer -v android debug
 
 mkdir -p "$PROJECT_ROOT/bin" "$PROJECT_ROOT/din"
 cp -f "$LINUX_WORKDIR/bin"/*.apk "$PROJECT_ROOT/bin"/ 2>/dev/null || true
