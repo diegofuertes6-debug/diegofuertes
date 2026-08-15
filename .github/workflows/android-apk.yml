@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      ANDROID_HOME: ${{ runner.home }}/.buildozer/android/platform/android-sdk
-      ANDROID_SDK_ROOT: ${{ runner.home }}/.buildozer/android/platform/android-sdk
-      ANDROIDSDK: ${{ runner.home }}/.buildozer/android/platform/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROIDSDK: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
 
     steps:
       - name: Checkout repository
