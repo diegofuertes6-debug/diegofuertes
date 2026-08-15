@@ -36,7 +36,9 @@ import android_services
 CONFIG_FILE = 'webServerApiSettings.json'
 
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
-_PRIORIDAD_VALS = ['alta', 'media', 'baja']
+_PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
+_SELECT_PAQUETERIA = 'Seleccionar paquetería'
+_SELECT_NOTIFICACION = 'Seleccionar notificación'
 
 
 def _project_dir():
@@ -63,8 +65,12 @@ class RepartidorApp(App if App is not object else object):
         self.lista_widget = None
         self.spinner_modo = None
         self.spinner_prioridad = None
+        self.spinner_paqueteria = None
+        self.spinner_notificacion = None
         self.txt_busqueda = None
         self._ubicacion_actual = None
+        self._paqueteria = None
+        self._notificacion = None
         self._clock_19 = None
 
     # ------------------------------------------------------------------
@@ -148,9 +154,12 @@ class RepartidorApp(App if App is not object else object):
         fila_opts.add_widget(Label(text='Prioridad:', size_hint_x=0.3, font_size='13sp'))
         self.spinner_prioridad = Spinner(
             text='media',
-            values=['alta', 'media', 'baja'],
+            values=_PRIORIDAD_VALS,
             size_hint_x=0.35,
+            background_normal='',
+            background_color=repartidor.PRIORITY_COLORS['media'],
         )
+        self.spinner_prioridad.bind(text=self._on_prioridad_cambio)
         fila_opts.add_widget(self.spinner_prioridad)
         fila_opts.add_widget(Label(text='Modo:', size_hint_x=0.15, font_size='13sp'))
         self.spinner_modo = Spinner(
@@ -161,6 +170,21 @@ class RepartidorApp(App if App is not object else object):
         self.spinner_modo.bind(text=self._on_modo_cambio)
         fila_opts.add_widget(self.spinner_modo)
         root.add_widget(fila_opts)
+
+        fila_selectores = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
+        self.spinner_paqueteria = Spinner(
+            text=_SELECT_PAQUETERIA,
+            values=['Correos', 'SEUR', 'MRW', 'DHL', 'Otra'],
+        )
+        self.spinner_paqueteria.bind(text=self._on_paqueteria_cambio)
+        self.spinner_notificacion = Spinner(
+            text=_SELECT_NOTIFICACION,
+            values=['Sin notificación', 'SMS', 'Correo', 'Llamada'],
+        )
+        self.spinner_notificacion.bind(text=self._on_notificacion_cambio)
+        fila_selectores.add_widget(self.spinner_paqueteria)
+        fila_selectores.add_widget(self.spinner_notificacion)
+        root.add_widget(fila_selectores)
 
         # ---- Lista de paradas ----
         scroll = ScrollView(size_hint=(1, 1))
@@ -206,7 +230,13 @@ class RepartidorApp(App if App is not object else object):
         if not concedido and not android_services.has_location_permission(denegados):
             self._set_estado(
                 'Permiso de ubicación denegado.\n'
-                'La ruta se calculará sin tu posición actual.'
+                'Concédelo en Ajustes y pulsa "Ubicación" para poder optimizar.'
+            )
+            return
+        if not android_services.is_location_enabled():
+            self._set_estado(
+                'La ubicación del dispositivo está desactivada.\n'
+                'Actívala en Ajustes y vuelve a pulsar "Ubicación".'
             )
             return
         self._set_estado('Obteniendo ubicación actual…')
@@ -223,6 +253,15 @@ class RepartidorApp(App if App is not object else object):
             self._set_estado('No se pudo obtener la ubicación en este equipo.')
 
     def _on_ubicacion(self, loc):
+        if not isinstance(loc, dict) or not repartidor.coordenadas_validas(
+            loc.get('lat'), loc.get('lng')
+        ):
+            self._ubicacion_actual = None
+            self._set_estado(
+                'No se recibió una ubicación válida. Comprueba que la ubicación '
+                'esté activa y vuelve a intentarlo.'
+            )
+            return
         self._ubicacion_actual = loc
         self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
         self._refrescar_lista()
@@ -355,10 +394,15 @@ class RepartidorApp(App if App is not object else object):
         self._set_estado(f'Buscando: {texto}…')
         parada = repartidor.buscar_direccion_texto(texto)
         if parada is None:
-            # Sin API key, crear parada manual con coordenadas vacías
-            parada = {'address': texto, 'lat': None, 'lng': None, 'estado': 'pendiente'}
+            self._set_estado(
+                'No se obtuvieron coordenadas para esa dirección. Comprueba la '
+                'dirección, la conexión y la API key antes de añadirla.'
+            )
+            return
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
         repartidor.asignar_prioridad(parada, prioridad)
+        parada['paqueteria'] = self._paqueteria
+        parada['notificacion'] = self._notificacion
         self.lista_paradas.append(parada)
         self._set_estado(f'Parada añadida: {parada.get("address", texto)}')
         self._refrescar_lista()
@@ -380,20 +424,24 @@ class RepartidorApp(App if App is not object else object):
             origen_lat=origen_lat, origen_lng=origen_lng,
         )
 
-        colores = {'alta': (0.8, 0.1, 0.1, 1), 'media': (0.9, 0.6, 0.1, 1), 'baja': (0.2, 0.6, 0.2, 1)}
         for idx, parada in enumerate(paradas_ord):
             fila = BoxLayout(size_hint_y=None, height='44dp', spacing=4)
+            color = repartidor.PRIORITY_COLORS.get(
+                parada.get('prioridad', 'media'),
+                repartidor.PRIORITY_COLORS['media'],
+            )
             lbl = Label(
                 text=f"[{parada.get('prioridad','?')}] {parada.get('address','Sin dirección')}",
                 halign='left',
                 font_size='12sp',
                 size_hint_x=0.8,
                 text_size=(None, None),
+                color=color,
             )
-            color = colores.get(parada.get('prioridad', 'media'), (0.5, 0.5, 0.5, 1))
             btn_del = Button(
                 text='✕',
                 size_hint_x=0.2,
+                background_normal='',
                 background_color=color,
             )
             real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
@@ -412,11 +460,39 @@ class RepartidorApp(App if App is not object else object):
     def _on_modo_cambio(self, *_args):
         self._refrescar_lista()
 
+    def _on_prioridad_cambio(self, _spinner, prioridad):
+        color = repartidor.PRIORITY_COLORS.get(
+            prioridad, repartidor.PRIORITY_COLORS['media']
+        )
+        if self.spinner_prioridad is not None:
+            self.spinner_prioridad.background_color = color
+
+    def _on_paqueteria_cambio(self, spinner, valor):
+        if valor == _SELECT_PAQUETERIA:
+            return
+        self._paqueteria = valor
+        spinner.text = _SELECT_PAQUETERIA
+        self._set_estado(f'Paquetería seleccionada: {valor}')
+
+    def _on_notificacion_cambio(self, spinner, valor):
+        if valor == _SELECT_NOTIFICACION:
+            return
+        self._notificacion = valor
+        spinner.text = _SELECT_NOTIFICACION
+        self._set_estado(f'Notificación seleccionada: {valor}')
+
     # ------------------------------------------------------------------
     # Abrir Maps
     # ------------------------------------------------------------------
     def abrir_google_maps(self, *_args):
         if not self.lista_paradas:
+            self._set_estado('Añade al menos una dirección antes de crear la ruta.')
+            return
+        if android_services.is_android() and not android_services.is_location_enabled():
+            self._set_estado(
+                'La ubicación del dispositivo está desactivada. Actívala en '
+                'Ajustes, pulsa "Ubicación" y vuelve a abrir la ruta.'
+            )
             return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
