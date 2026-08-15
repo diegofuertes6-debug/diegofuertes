@@ -11,4 +11,5 @@ android.permissions = INTERNET, CAMERA, ACCESS_FINE_LOCATION, WRITE_EXTERNAL_STO
 android.api = 31
 android.minapi = 21
 android.ndk = 25b
+android.sdk_path =
 android.archs = arm64-v8a
