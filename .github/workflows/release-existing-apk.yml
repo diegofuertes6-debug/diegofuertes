@@ -18,7 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_apk="$(python3 - <<'PY'
+          if ! source_apk="$(python3 - <<'PY'
           from pathlib import Path
 
           roots = (Path("bin"), Path(".github/workflows"))
@@ -32,20 +32,24 @@ jobs:
           latest = max(candidates, key=lambda path: path.stat().st_mtime)
           print(latest.as_posix())
           PY
-          )"
-
-          if [ -z "$source_apk" ]; then
-            echo "No se encontró ninguna APK en bin/ ni en .github/workflows/."
+          )"; then
+            echo "No se encontró ninguna APK en bin/ ni en .github/workflows/." >&2
             exit 1
           fi
  
           artifact_name="$(basename "$source_apk")"
+          safe_artifact_name="$(printf '%s' "$artifact_name" | tr -cs 'A-Za-z0-9._-' '-')"
+          safe_artifact_name="${safe_artifact_name#-}"
+          safe_artifact_name="${safe_artifact_name%-}"
+          if [ -z "$safe_artifact_name" ]; then
+            safe_artifact_name="repartidor-apk"
+          fi
           mkdir -p release
           cp "$source_apk" "release/$artifact_name"
 
           echo "source_apk=$source_apk" >> "$GITHUB_OUTPUT"
           echo "release_apk=release/$artifact_name" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$safe_artifact_name" >> "$GITHUB_OUTPUT"
           ls -l "$source_apk" "release/$artifact_name"
 
       - name: Upload APK artifact
