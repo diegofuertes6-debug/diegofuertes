@@ -45,13 +45,16 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 | Permiso | Para qué se usa |
 |---|---|
 | `INTERNET` | Llamadas a la API de geocodificación de Google Maps |
+| `ACCESS_COARSE_LOCATION` | Permitir que Android ofrezca ubicación aproximada |
+| `ACCESS_FINE_LOCATION` | Obtener ubicación precisa si el usuario la autoriza |
 | `CAMERA` | Captura de foto para OCR de dirección |
-| `ACCESS_FINE_LOCATION` | Obtener la posición GPS del repartidor |
-| `WRITE_EXTERNAL_STORAGE` | Guardar la foto temporal en disco |
-| `READ_EXTERNAL_STORAGE` | Leer la foto guardada para procesarla |
 | `RECORD_AUDIO` | Reconocimiento de voz (micrófono) |
 
-Los permisos `ACCESS_FINE_LOCATION` y `CAMERA` se solicitan en tiempo de ejecución. Si el usuario los deniega, la app muestra un mensaje claro y continúa sin esa funcionalidad.
+Los permisos no se solicitan al arrancar. Se piden en contexto al pulsar
+**Ubicación**, **Cámara** o **Micrófono**. Si el usuario los deniega, la app
+muestra un mensaje y mantiene disponible la entrada manual. Las imágenes se
+copian inmediatamente al directorio privado, se eliminan después del OCR y no
+quedan en la galería; la app tampoco guarda el audio reconocido.
 
 ---
 
@@ -59,7 +62,8 @@ Los permisos `ACCESS_FINE_LOCATION` y `CAMERA` se solicitan en tiempo de ejecuci
 
 ### Cámara
 - Pulsa el botón **📷 Cámara**.
-- En Android abre la cámara nativa y guarda la foto.
+- En Android abre la cámara nativa y procesa la foto localmente con ML Kit.
+- El archivo temporal se elimina al completar o fallar el OCR.
 - En escritorio intenta capturar un fotograma con OpenCV (`cv2`).
 - El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
 
@@ -69,6 +73,11 @@ Los permisos `ACCESS_FINE_LOCATION` y `CAMERA` se solicitan en tiempo de ejecuci
 - En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.
   - Instálala con: `pip install SpeechRecognition pyaudio`
 - Si el reconocimiento falla, la app muestra un mensaje y puedes usar la búsqueda manual.
+
+### Ubicación
+- Pulsa **⌖ Ubicación** para solicitar una posición solo cuando la necesites.
+- Android permite conceder ubicación aproximada o precisa; la app usa la
+  posición disponible como origen al ordenar y abrir la ruta.
 
 ---
 
@@ -97,6 +106,9 @@ El recálculo se dispara automáticamente:
    ```bash
    buildozer android debug
    ```
+
+El build fija `python-for-android` en `v2024.01.21`, compatible con
+Buildozer 1.5.0 y la toolchain Android usada por el workflow.
 
 ## Generar APK firmada y publicarla en GitHub
 

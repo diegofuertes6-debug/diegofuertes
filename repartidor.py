@@ -168,7 +168,14 @@ def procesar_imagen(path):
         print(f'No se pudo procesar la imagen: {exc}')
         return '', ''
 
-    texto = re.sub(r'\s+', ' ', texto).strip()
+    return extraer_direccion_texto_ocr(texto)
+
+
+def extraer_direccion_texto_ocr(texto):
+    """Extract a likely Spanish street address and postal code from OCR text."""
+    texto = re.sub(r'\s+', ' ', texto or '').strip()
+    if not texto:
+        return '', ''
     print('\n--- Texto detectado ---')
     print(texto)
 

@@ -1,8 +1,11 @@
 import unittest
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import main
 import repartidor
+import android_services
 
 
 class PriorizacionTests(unittest.TestCase):
@@ -120,6 +123,81 @@ class PermisosGeolocalTests(unittest.TestCase):
         # Sin la librería android.permissions disponible en entorno de test
         resultado = repartidor.solicitar_permiso_geolocalizacion()
         self.assertFalse(resultado)
+
+
+class AndroidServicesTests(unittest.TestCase):
+    def test_import_android_services_en_escritorio(self):
+        self.assertFalse(android_services.is_android())
+
+    def test_permisos_denegados_incluye_respuestas_ausentes(self):
+        permisos = ['coarse', 'fine', 'camera']
+        self.assertEqual(
+            android_services.denied_permissions(permisos, [True, False]),
+            ['fine', 'camera'],
+        )
+
+    def test_ubicacion_aproximada_es_suficiente(self):
+        self.assertTrue(
+            android_services.has_location_permission(
+                ['android.permission.ACCESS_FINE_LOCATION']
+            )
+        )
+
+    def test_ubicacion_totalmente_denegada(self):
+        self.assertFalse(
+            android_services.has_location_permission(
+                list(android_services.LOCATION_PERMISSIONS)
+            )
+        )
+
+    @patch('android_services.is_android', return_value=False)
+    def test_permisos_no_android_responde_sin_solicitar(self, _mock):
+        resultado = []
+        android_services.request_runtime_permissions(
+            android_services.CAMERA_PERMISSIONS,
+            lambda concedido, denegados: resultado.append((concedido, denegados)),
+        )
+        self.assertEqual(resultado, [(True, [])])
+
+    @patch('android_services.is_android', return_value=True)
+    def test_solicitud_interrumpida_no_concede_permiso(self, _mock):
+        android_module = types.ModuleType('android')
+        permissions_module = types.ModuleType('android.permissions')
+        permissions_module.check_permission = lambda _permission: False
+        permissions_module.request_permissions = (
+            lambda _permissions, callback: callback([], [])
+        )
+        android_module.permissions = permissions_module
+        resultado = []
+        with patch.dict(
+            sys.modules,
+            {
+                'android': android_module,
+                'android.permissions': permissions_module,
+            },
+        ):
+            android_services.request_runtime_permissions(
+                android_services.CAMERA_PERMISSIONS,
+                lambda concedido, denegados: resultado.append(
+                    (concedido, denegados)
+                ),
+            )
+        self.assertEqual(
+            resultado,
+            [(False, list(android_services.CAMERA_PERMISSIONS))],
+        )
+
+
+class OcrDireccionTests(unittest.TestCase):
+    def test_extrae_direccion_y_codigo_postal(self):
+        direccion, cp = repartidor.extraer_direccion_texto_ocr(
+            'Entrega para Calle Mayor 15, 28013 Madrid'
+        )
+        self.assertTrue(direccion.startswith('Calle Mayor 15'))
+        self.assertEqual(cp, '28013')
+
+    def test_texto_ocr_vacio(self):
+        self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
 
 
 class BuscarDireccionTests(unittest.TestCase):

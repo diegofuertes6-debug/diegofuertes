@@ -5,7 +5,7 @@ try:
 except ImportError as exc:
     raise SystemExit(f'PyYAML no está instalado: {exc}') from exc
 
-path = Path('.github/workflows/build-apk.yml')
+path = Path('.github/workflows/android-apk.yml')
 text = path.read_text(encoding='utf-8')
 parsed = yaml.safe_load(text)
 print('YAML parsed successfully')
