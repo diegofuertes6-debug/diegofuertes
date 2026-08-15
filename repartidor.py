@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Aplicación de reparto robusta para escritorio y Android."""
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -211,6 +212,75 @@ def cargar_api_key():
 API_KEY = cargar_api_key()
 
 lista_paradas = []
+CONTADORES_TIPOS = {'notificacion': 0, 'paquete': 0}
+PRIORIDADES_ORDEN = {'alta': 0, 'media': 1, 'baja': 2}
+
+
+def normalizar_tipo_parada(tipo_parada):
+    if not isinstance(tipo_parada, str):
+        return 'notificacion'
+    tipo = tipo_parada.strip().lower()
+    if tipo in {'notificacion', 'notif', 'notificaciones'}:
+        return 'notificacion'
+    if tipo in {'paquete', 'pedido', 'paquetes', 'pedidos'}:
+        return 'paquete'
+    return 'notificacion'
+
+
+def generar_codigo_parada(tipo_parada):
+    tipo = normalizar_tipo_parada(tipo_parada)
+    CONTADORES_TIPOS.setdefault(tipo, 0)
+    CONTADORES_TIPOS[tipo] += 1
+    prefijo = 'N' if tipo == 'notificacion' else 'P'
+    return f'{prefijo}{CONTADORES_TIPOS[tipo]}'
+
+
+def _distancia_km(origen, destino):
+    if not isinstance(origen, dict) or not isinstance(destino, dict):
+        return float('inf')
+
+    try:
+        lat1 = float(origen.get('lat'))
+        lng1 = float(origen.get('lng'))
+        lat2 = float(destino.get('lat'))
+        lng2 = float(destino.get('lng'))
+    except (TypeError, ValueError):
+        return float('inf')
+
+    radio_tierra = 6371.0
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(delta_lat / 2.0) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2.0) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radio_tierra * c
+
+
+def ordenar_ruta_optima(paradas):
+    if not paradas:
+        return []
+
+    validas = [
+        p for p in paradas
+        if isinstance(p, dict)
+        and isinstance(p.get('lat'), (int, float))
+        and isinstance(p.get('lng'), (int, float))
+    ]
+    if not validas:
+        return list(paradas)
+
+    orden = [validas[0]]
+    restantes = validas[1:]
+    while restantes:
+        ultimo = orden[-1]
+        siguiente = min(restantes, key=lambda p: _distancia_km(ultimo, p))
+        orden.append(siguiente)
+        restantes.remove(siguiente)
+    return orden
 
 
 def obtener_coordenadas(direccion, cp):
@@ -255,7 +325,7 @@ def asignar_prioridad(parada, prioridad):
     return parada
 
 
-def priorizar_paradas(paradas, modo='moto'):
+def priorizar_paradas(paradas, modo='moto', hora=None):
     if not paradas:
         return []
 
@@ -263,17 +333,45 @@ def priorizar_paradas(paradas, modo='moto'):
     if modo not in {'pie', 'moto', 'coche'}:
         modo = 'moto'
 
-    orden = {'alta': 0, 'media': 1, 'baja': 2}
+    if hora is None:
+        hora = datetime.now()
+    if isinstance(hora, str):
+        try:
+            hora = datetime.fromisoformat(hora)
+        except ValueError:
+            hora = datetime.now()
+
+    paradas_dict = [p for p in paradas if isinstance(p, dict)]
+    if not paradas_dict:
+        return []
+
+    latlng_validas = [
+        p for p in paradas_dict
+        if isinstance(p.get('lat'), (int, float)) and isinstance(p.get('lng'), (int, float))
+    ]
+
+    if hora.hour > 18 or (hora.hour == 18 and hora.minute >= 30):
+        pendientes = [p for p in paradas_dict if p.get('pendiente', True)]
+        base = pendientes if pendientes else paradas_dict
+        por_prioridad = {nivel: [] for nivel in ['alta', 'media', 'baja']}
+        for parada in base:
+            prioridad = str(parada.get('prioridad', 'media')).lower()
+            if prioridad not in PRIORIDADES_ORDEN:
+                prioridad = 'media'
+            por_prioridad[prioridad].append(parada)
+        orden_final = []
+        for prioridad in ('alta', 'media', 'baja'):
+            if por_prioridad[prioridad]:
+                orden_final.extend(ordenar_ruta_optima(por_prioridad[prioridad]))
+        return orden_final
+
+    if latlng_validas:
+        return ordenar_ruta_optima(latlng_validas)
+
     paradas_ordenadas = sorted(
-        (p for p in paradas if isinstance(p, dict)),
-        key=lambda p: orden.get(p.get('prioridad', 'media'), 1)
+        paradas_dict,
+        key=lambda p: PRIORIDADES_ORDEN.get(str(p.get('prioridad', 'media')).lower(), 1)
     )
-
-    if datetime.now().hour >= 19:
-        paradas_altas = [p for p in paradas_ordenadas if p.get('prioridad') == 'alta']
-        paradas_restantes = [p for p in paradas_ordenadas if p.get('prioridad') != 'alta']
-        return paradas_altas + paradas_restantes
-
     return paradas_ordenadas
 
 
