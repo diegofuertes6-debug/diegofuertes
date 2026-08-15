@@ -1,0 +1,66 @@
+name: Android APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/enrrutador-prioridades
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OS dependencies for Buildozer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk \
+            python3-pip python3-venv \
+            libncurses5-dev libffi-dev libssl-dev \
+            autoconf automake libtool pkg-config
+
+      - name: Install Buildozer and Python requirements
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install buildozer cython
+
+      - name: Build APK
+        run: |
+          buildozer android debug
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          APK_PATH=$(find . -type f -iname "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK generated."
+            exit 1
+          fi
+          cp "$APK_PATH" dist/app-release.apk
+          ls -l dist
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.apk
+          path: dist/app-release.apk
+          if-no-files-found: error
