@@ -182,6 +182,76 @@ class AndroidServicesTests(unittest.TestCase):
     def test_ubicacion_habilitada_en_escritorio(self, _mock):
         self.assertTrue(android_services.is_location_enabled())
 
+    @patch('android_services.is_android', return_value=True)
+    def test_camara_inicia_intent_desde_mactivity(self, _mock):
+        bound_callbacks = {}
+        activity_bridge = types.SimpleNamespace(
+            bind=lambda **callbacks: bound_callbacks.update(callbacks),
+            unbind=lambda **_callbacks: None,
+        )
+        java_activity = MagicMock()
+        java_activity.getPackageName.return_value = 'org.test.repartidorapp'
+        java_activity.getPackageManager.return_value = object()
+
+        class FakeIntent:
+            FLAG_GRANT_READ_URI_PERMISSION = 1
+            FLAG_GRANT_WRITE_URI_PERMISSION = 2
+
+            def __init__(self, _action):
+                self.extras = {}
+
+            def putExtra(self, key, value):
+                self.extras[key] = value
+
+            def setClipData(self, _clip):
+                return None
+
+            def addFlags(self, _flags):
+                return None
+
+            def resolveActivity(self, _manager):
+                return object()
+
+        fake_classes = {
+            'android.content.ClipData': types.SimpleNamespace(
+                newRawUri=lambda _label, uri: uri
+            ),
+            'java.io.File': lambda path: path,
+            'androidx.core.content.FileProvider': types.SimpleNamespace(
+                getUriForFile=lambda _activity, _authority, _file: 'content://capture'
+            ),
+            'android.content.Intent': FakeIntent,
+            'android.provider.MediaStore': types.SimpleNamespace(
+                ACTION_IMAGE_CAPTURE='android.media.action.IMAGE_CAPTURE',
+                EXTRA_OUTPUT='output',
+            ),
+        }
+        android_module = types.ModuleType('android')
+        android_module.activity = activity_bridge
+        android_module.mActivity = java_activity
+        jnius_module = types.ModuleType('jnius')
+        jnius_module.autoclass = lambda name: fake_classes[name]
+        jnius_module.cast = lambda _class_name, value: value
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(
+                sys.modules,
+                {'android': android_module, 'jnius': jnius_module},
+            ):
+                android_services.capture_photo(
+                    str(Path(tmp) / 'capture.jpg'),
+                    lambda _path: None,
+                    self.fail,
+                )
+            self.assertIn('on_activity_result', bound_callbacks)
+            java_activity.startActivityForResult.assert_called_once()
+            self.assertEqual(
+                java_activity.startActivityForResult.call_args.args[1],
+                android_services.CAMERA_REQUEST_CODE,
+            )
+        finally:
+            android_services._camera_callback = None
+
     def test_permisos_denegados_incluye_respuestas_ausentes(self):
         permisos = ['coarse', 'fine', 'camera']
         self.assertEqual(

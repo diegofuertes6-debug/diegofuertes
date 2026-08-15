@@ -175,7 +175,7 @@ def capture_photo(filename, on_complete, on_error):
 
         _camera_callback = on_activity_result
         activity_module.bind(on_activity_result=on_activity_result)
-        activity_module.startActivityForResult(intent, CAMERA_REQUEST_CODE)
+        mActivity.startActivityForResult(intent, CAMERA_REQUEST_CODE)
     except Exception as exc:
         if activity_module is not None and _camera_callback is not None:
             try:
@@ -330,6 +330,7 @@ def start_speech_recognition(on_success, on_error):
 
     try:
         from android import activity
+        from android import mActivity
         from jnius import autoclass
 
         Intent = autoclass('android.content.Intent')
@@ -362,7 +363,7 @@ def start_speech_recognition(on_success, on_error):
 
         _speech_callback = on_activity_result
         activity.bind(on_activity_result=on_activity_result)
-        activity.startActivityForResult(intent, SPEECH_REQUEST_CODE)
+        mActivity.startActivityForResult(intent, SPEECH_REQUEST_CODE)
     except Exception as exc:
         try:
             activity.unbind(on_activity_result=_speech_callback)

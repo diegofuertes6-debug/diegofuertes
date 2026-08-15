@@ -418,8 +418,8 @@ def dictar_direccion():
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, 'es-ES')
-            from android import activity
-            activity.startActivityForResult(intent, 1001)
+            from android import mActivity
+            mActivity.startActivityForResult(intent, 1001)
             return ''
         except Exception as exc:
             print(f'No se pudo iniciar reconocimiento de voz en Android: {exc}')
