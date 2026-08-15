@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
     GridLayout = object
 
 import repartidor
+import android_services
 
 CONFIG_FILE = 'webServerApiSettings.json'
 
@@ -63,7 +64,6 @@ class RepartidorApp(App if App is not object else object):
         self.spinner_modo = None
         self.spinner_prioridad = None
         self.txt_busqueda = None
-        self._permiso_geo = None  # None = no consultado, True/False
         self._ubicacion_actual = None
         self._clock_19 = None
 
@@ -93,7 +93,7 @@ class RepartidorApp(App if App is not object else object):
 
         # ---- Estado / info ----
         self.lbl_estado = Label(
-            text='App Repartidor\nEsperando permisos…',
+            text='App Repartidor\nElige cómo introducir una dirección.',
             halign='center',
             font_size='15sp',
             size_hint_y=None,
@@ -115,8 +115,15 @@ class RepartidorApp(App if App is not object else object):
         )
         btn_micro.bind(on_press=self.dictar_microfono)
 
+        btn_ubicacion = Button(
+            text='⌖ Ubicación',
+            background_color=(0.5, 0.3, 0.8, 1),
+        )
+        btn_ubicacion.bind(on_press=self.solicitar_ubicacion)
+
         fila_entrada.add_widget(btn_camara)
         fila_entrada.add_widget(btn_micro)
+        fila_entrada.add_widget(btn_ubicacion)
         root.add_widget(fila_entrada)
 
         # ---- Búsqueda manual ----
@@ -177,8 +184,7 @@ class RepartidorApp(App if App is not object else object):
         self.btn_ruta.bind(on_press=self.abrir_google_maps)
         root.add_widget(self.btn_ruta)
 
-        # Inicializar geolocalización y reloj 19:00
-        Clock.schedule_once(self._iniciar_geolocalizacion, 0.5)
+        # No se solicitan permisos al arrancar; cada función los pide al usarse.
         self._programar_reloj_19()
 
         return root
@@ -186,23 +192,40 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     # Geolocalización
     # ------------------------------------------------------------------
-    def _iniciar_geolocalizacion(self, *_args):
-        concedido = repartidor.solicitar_permiso_geolocalizacion()
-        self._permiso_geo = concedido
-        if concedido:
-            self._set_estado('Permiso de ubicación concedido ✓')
-            self._actualizar_ubicacion()
-        else:
+    def solicitar_ubicacion(self, *_args):
+        self._set_estado('Solicitando acceso a la ubicación…')
+        if not android_services.is_android():
+            self._actualizar_ubicacion_escritorio()
+            return
+        android_services.request_runtime_permissions(
+            android_services.LOCATION_PERMISSIONS,
+            self._on_permiso_ubicacion,
+        )
+
+    def _on_permiso_ubicacion(self, concedido, denegados):
+        if not concedido and not android_services.has_location_permission(denegados):
             self._set_estado(
                 'Permiso de ubicación denegado.\n'
                 'La ruta se calculará sin tu posición actual.'
             )
+            return
+        self._set_estado('Obteniendo ubicación actual…')
+        android_services.get_current_location(
+            self._on_ubicacion,
+            self._set_estado,
+        )
 
-    def _actualizar_ubicacion(self, *_args):
+    def _actualizar_ubicacion_escritorio(self):
         loc = repartidor.obtener_ubicacion_actual()
         if loc:
-            self._ubicacion_actual = loc
-            self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
+            self._on_ubicacion(loc)
+        else:
+            self._set_estado('No se pudo obtener la ubicación en este equipo.')
+
+    def _on_ubicacion(self, loc):
+        self._ubicacion_actual = loc
+        self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
+        self._refrescar_lista()
 
     # ------------------------------------------------------------------
     # Reloj 19:00
@@ -223,19 +246,56 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     def escanear_camara(self, *_args):
         """Toma una foto, extrae la dirección con OCR y añade la parada."""
+        if android_services.is_android():
+            self._set_estado('Solicitando acceso a la cámara…')
+            android_services.request_runtime_permissions(
+                android_services.CAMERA_PERMISSIONS,
+                self._on_permiso_camara,
+            )
+            return
+        self._abrir_camara()
+
+    def _on_permiso_camara(self, concedido, _denegados):
+        if not concedido:
+            self._set_estado(
+                'Permiso de cámara denegado. Puedes escribir la dirección manualmente.'
+            )
+            return
+        self._abrir_camara()
+
+    def _abrir_camara(self):
         self._set_estado('Abriendo cámara…')
         filepath = os.path.join(self.user_data_dir, 'temp_scan.jpg')
-        try:
-            from plyer import camera
-            camera.take_picture(filename=filepath, on_complete=self._procesar_foto)
-        except Exception as exc:
-            self._set_estado(f'Error cámara: {exc}')
-            self._procesar_foto(filepath)  # intenta con cv2 / ruta existente
+        self._eliminar_temporal(filepath)
+        android_services.capture_photo(
+            filepath,
+            self._procesar_foto,
+            self._set_estado,
+        )
 
     def _procesar_foto(self, filepath):
+        filepath = filepath or os.path.join(self.user_data_dir, 'temp_scan.jpg')
+        if not os.path.isfile(filepath):
+            self._set_estado('No se capturó ninguna imagen.')
+            return
         self._set_estado('Procesando imagen…')
-        resultado = repartidor.take_photo(filepath)
-        direccion, cp = repartidor.procesar_imagen(resultado)
+        if android_services.is_android():
+            android_services.recognize_image_text(
+                filepath,
+                lambda texto: self._procesar_texto_ocr(texto, filepath),
+                lambda error: self._error_captura(error, filepath),
+            )
+            return
+        direccion, cp = repartidor.procesar_imagen(filepath)
+        self._usar_direccion_ocr(direccion, cp)
+        self._eliminar_temporal(filepath)
+
+    def _procesar_texto_ocr(self, texto, filepath):
+        direccion, cp = repartidor.extraer_direccion_texto_ocr(texto)
+        self._usar_direccion_ocr(direccion, cp)
+        self._eliminar_temporal(filepath)
+
+    def _usar_direccion_ocr(self, direccion, cp):
         if direccion and cp:
             self._geocodificar_y_añadir(f'{direccion}, {cp}')
         elif direccion:
@@ -243,8 +303,19 @@ class RepartidorApp(App if App is not object else object):
         else:
             self._set_estado('No se detectó dirección en la imagen.')
 
+    def _error_captura(self, error, filepath):
+        self._eliminar_temporal(filepath)
+        self._set_estado(error)
+
     def dictar_microfono(self, *_args):
         """Dicta una dirección por voz y añade la parada."""
+        if android_services.is_android():
+            self._set_estado('Solicitando acceso al micrófono…')
+            android_services.request_runtime_permissions(
+                android_services.MICROPHONE_PERMISSIONS,
+                self._on_permiso_microfono,
+            )
+            return
         self._set_estado('Escuchando micrófono…')
         texto = repartidor.dictar_direccion()
         if texto:
@@ -254,6 +325,18 @@ class RepartidorApp(App if App is not object else object):
                 'No se captó voz.\n'
                 'Asegúrate de tener micrófono y SpeechRecognition instalado.'
             )
+
+    def _on_permiso_microfono(self, concedido, _denegados):
+        if not concedido:
+            self._set_estado(
+                'Permiso de micrófono denegado. Puedes escribir la dirección manualmente.'
+            )
+            return
+        self._set_estado('Di ahora la dirección completa…')
+        android_services.start_speech_recognition(
+            self._geocodificar_y_añadir,
+            self._set_estado,
+        )
 
     def buscar_manual(self, *_args):
         """Geocodifica la dirección escrita manualmente."""
@@ -355,6 +438,14 @@ class RepartidorApp(App if App is not object else object):
     def _set_estado(self, texto):
         if self.lbl_estado is not None:
             self.lbl_estado.text = str(texto)
+
+    @staticmethod
+    def _eliminar_temporal(filepath):
+        try:
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+        except OSError:
+            pass
 
 
 if __name__ == '__main__':
