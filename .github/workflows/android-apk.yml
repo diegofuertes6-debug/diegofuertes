@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - copilot/fix-github-actions-job
+      - copilot/fix-github-actions-job-another-one
       - feature/enrrutador-prioridades
 
 jobs:
