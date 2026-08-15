@@ -160,6 +160,22 @@ class AndroidManifestHookTests(unittest.TestCase):
         self.assertEqual(resultado.count(p4a_hook.PROVIDER_MARKER), 1)
         self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
 
+    def test_query_camara_es_hijo_de_manifest_e_idempotente(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / 'AndroidManifest.xml'
+            manifest.write_text(
+                '<manifest><application></application></manifest>',
+                encoding='utf-8',
+            )
+            p4a_hook.patch_manifest(manifest)
+            p4a_hook.patch_manifest(manifest)
+            resultado = manifest.read_text(encoding='utf-8')
+
+        self.assertEqual(resultado.count(p4a_hook.CAMERA_ACTION), 1)
+        self.assertLess(resultado.index('<queries>'), resultado.index('<application'))
+        self.assertGreater(resultado.index('<provider'), resultado.index('<application'))
+        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
+
 
 class PermisosGeolocalTests(unittest.TestCase):
     @patch('repartidor._is_android', return_value=False)
