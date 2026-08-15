@@ -1,11 +1,14 @@
 import unittest
 import sys
+import tempfile
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import main
 import repartidor
 import android_services
+import p4a_hook
 
 
 class PriorizacionTests(unittest.TestCase):
@@ -98,18 +101,80 @@ class ModoTransporteTests(unittest.TestCase):
 
     def test_cambio_modo_recalcula_ruta(self):
         paradas = self._paradas_con_coords()
-        url_moto = repartidor.generar_ruta_maps(paradas, modo='moto', hora_actual=10)
-        url_pie = repartidor.generar_ruta_maps(paradas, modo='pie', hora_actual=10)
+        url_moto = repartidor.generar_ruta_maps(
+            paradas, modo='moto', hora_actual=10,
+            origen_lat=39.9, origen_lng=-2.9,
+        )
+        url_pie = repartidor.generar_ruta_maps(
+            paradas, modo='pie', hora_actual=10,
+            origen_lat=39.9, origen_lng=-2.9,
+        )
         self.assertIn('travelmode=driving', url_moto)
         self.assertIn('travelmode=walking', url_pie)
+        self.assertIn('origin=39.9,-2.9', url_moto)
 
     def test_generar_ruta_sin_paradas(self):
         self.assertEqual(repartidor.generar_ruta_maps([], modo='moto'), 'No hay paradas')
 
     def test_generar_ruta_sin_coordenadas_validas(self):
         paradas = [{'address': 'X', 'prioridad': 'media'}]
-        resultado = repartidor.generar_ruta_maps(paradas, modo='coche', hora_actual=10)
-        self.assertEqual(resultado, 'No hay paradas con coordenadas válidas')
+        resultado = repartidor.generar_ruta_maps(
+            paradas, modo='coche', hora_actual=10,
+            origen_lat=40.0, origen_lng=-3.0,
+        )
+        self.assertIn('paradas sin coordenadas válidas', resultado)
+
+    def test_generar_ruta_bloquea_origen_invalido(self):
+        resultado = repartidor.generar_ruta_maps(
+            self._paradas_con_coords(), modo='coche', hora_actual=10
+        )
+        self.assertIn('ubicación de origen válida', resultado)
+
+    def test_coordenadas_validan_rangos_y_booleanos(self):
+        self.assertTrue(repartidor.coordenadas_validas(40.4, -3.7))
+        self.assertFalse(repartidor.coordenadas_validas(True, -3.7))
+        self.assertFalse(repartidor.coordenadas_validas(91, -3.7))
+        self.assertFalse(repartidor.coordenadas_validas(40.4, float('nan')))
+
+
+class PrioridadColorTests(unittest.TestCase):
+    def test_mapeo_centralizado_rojo_amarillo_verde(self):
+        self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'baja'))
+        self.assertEqual(repartidor.PRIORITY_COLORS['alta'], (1.0, 0.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 1.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['baja'], (0.0, 1.0, 0.0, 1.0))
+
+
+class AndroidManifestHookTests(unittest.TestCase):
+    def test_provider_se_inserta_como_hijo_de_application_una_vez(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / 'AndroidManifest.xml'
+            manifest.write_text(
+                '<manifest><application></application></manifest>',
+                encoding='utf-8',
+            )
+            p4a_hook.inject_file_provider(manifest)
+            p4a_hook.inject_file_provider(manifest)
+            resultado = manifest.read_text(encoding='utf-8')
+
+        self.assertEqual(resultado.count(p4a_hook.PROVIDER_MARKER), 1)
+        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
+
+    def test_query_camara_es_hijo_de_manifest_e_idempotente(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / 'AndroidManifest.xml'
+            manifest.write_text(
+                '<manifest><application></application></manifest>',
+                encoding='utf-8',
+            )
+            p4a_hook.patch_manifest(manifest)
+            p4a_hook.patch_manifest(manifest)
+            resultado = manifest.read_text(encoding='utf-8')
+
+        self.assertEqual(resultado.count(p4a_hook.CAMERA_ACTION), 1)
+        self.assertLess(resultado.index('<queries>'), resultado.index('<application'))
+        self.assertGreater(resultado.index('<provider'), resultado.index('<application'))
+        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
 
 
 class PermisosGeolocalTests(unittest.TestCase):
@@ -128,6 +193,80 @@ class PermisosGeolocalTests(unittest.TestCase):
 class AndroidServicesTests(unittest.TestCase):
     def test_import_android_services_en_escritorio(self):
         self.assertFalse(android_services.is_android())
+
+    @patch('android_services.is_android', return_value=False)
+    def test_ubicacion_habilitada_en_escritorio(self, _mock):
+        self.assertTrue(android_services.is_location_enabled())
+
+    @patch('android_services.is_android', return_value=True)
+    def test_camara_inicia_intent_desde_mactivity(self, _mock):
+        bound_callbacks = {}
+        activity_bridge = types.SimpleNamespace(
+            bind=lambda **callbacks: bound_callbacks.update(callbacks),
+            unbind=lambda **_callbacks: None,
+        )
+        java_activity = MagicMock()
+        java_activity.getPackageName.return_value = 'org.test.repartidorapp'
+        java_activity.getPackageManager.return_value = object()
+
+        class FakeIntent:
+            FLAG_GRANT_READ_URI_PERMISSION = 1
+            FLAG_GRANT_WRITE_URI_PERMISSION = 2
+
+            def __init__(self, _action):
+                self.extras = {}
+
+            def putExtra(self, key, value):
+                self.extras[key] = value
+
+            def setClipData(self, _clip):
+                return None
+
+            def addFlags(self, _flags):
+                return None
+
+            def resolveActivity(self, _manager):
+                return object()
+
+        fake_classes = {
+            'android.content.ClipData': types.SimpleNamespace(
+                newRawUri=lambda _label, uri: uri
+            ),
+            'java.io.File': lambda path: path,
+            'androidx.core.content.FileProvider': types.SimpleNamespace(
+                getUriForFile=lambda _activity, _authority, _file: 'content://capture'
+            ),
+            'android.content.Intent': FakeIntent,
+            'android.provider.MediaStore': types.SimpleNamespace(
+                ACTION_IMAGE_CAPTURE='android.media.action.IMAGE_CAPTURE',
+                EXTRA_OUTPUT='output',
+            ),
+        }
+        android_module = types.ModuleType('android')
+        android_module.activity = activity_bridge
+        android_module.mActivity = java_activity
+        jnius_module = types.ModuleType('jnius')
+        jnius_module.autoclass = lambda name: fake_classes[name]
+        jnius_module.cast = lambda _class_name, value: value
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(
+                sys.modules,
+                {'android': android_module, 'jnius': jnius_module},
+            ):
+                android_services.capture_photo(
+                    str(Path(tmp) / 'capture.jpg'),
+                    lambda _path: None,
+                    self.fail,
+                )
+            self.assertIn('on_activity_result', bound_callbacks)
+            java_activity.startActivityForResult.assert_called_once()
+            self.assertEqual(
+                java_activity.startActivityForResult.call_args.args[1],
+                android_services.CAMERA_REQUEST_CODE,
+            )
+        finally:
+            android_services._camera_callback = None
 
     def test_permisos_denegados_incluye_respuestas_ausentes(self):
         permisos = ['coarse', 'fine', 'camera']

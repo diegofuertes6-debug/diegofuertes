@@ -10,6 +10,8 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
   - 🎙 Micrófono: dicta la dirección por voz (speech-to-text).
   - 🔍 Búsqueda manual: escribe la dirección directamente.
 - **Prioridades**: asigna prioridad alta / media / baja a cada parada.
+- **Paquetería y notificación**: selectores contextuales que guardan ambas
+  opciones en cada parada nueva.
 - **Modo de transporte**: a pie / coche / moto.
 - **Optimización de ruta**: heurística del vecino más cercano para minimizar la distancia recorrida.
 - **Regla de las 19:00**: a partir de las 19:00 hora local las paradas pendientes se reordenan primero por prioridad (alta > media > baja) y dentro de cada grupo se aplica la optimización de vecino más cercano.
@@ -53,8 +55,8 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 Los permisos no se solicitan al arrancar. Se piden en contexto al pulsar
 **Ubicación**, **Cámara** o **Micrófono**. Si el usuario los deniega, la app
 muestra un mensaje y mantiene disponible la entrada manual. Las imágenes se
-copian inmediatamente al directorio privado, se eliminan después del OCR y no
-quedan en la galería; la app tampoco guarda el audio reconocido.
+capturan en almacenamiento privado mediante `FileProvider`, se eliminan después
+del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 
 ---
 
@@ -78,6 +80,9 @@ quedan en la galería; la app tampoco guarda el audio reconocido.
 - Pulsa **⌖ Ubicación** para solicitar una posición solo cuando la necesites.
 - Android permite conceder ubicación aproximada o precisa; la app usa la
   posición disponible como origen al ordenar y abrir la ruta.
+- La optimización se bloquea con un mensaje explicativo si la ubicación está
+  desactivada, falta el permiso, el origen no es válido o alguna parada no pudo
+  geocodificarse.
 
 ---
 

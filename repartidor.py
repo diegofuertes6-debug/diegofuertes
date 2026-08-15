@@ -31,6 +31,12 @@ API_KEY_CANDIDATES = (
     'apiKey',
     'key',
 )
+PRIORITY_ORDER = ('alta', 'media', 'baja')
+PRIORITY_COLORS = {
+    'alta': (1.0, 0.0, 0.0, 1.0),
+    'media': (1.0, 1.0, 0.0, 1.0),
+    'baja': (0.0, 1.0, 0.0, 1.0),
+}
 
 try:
     from dotenv import load_dotenv
@@ -90,38 +96,6 @@ def _is_android():
     return _get_platform_name() == 'android' or os.environ.get('ANDROID_ARGUMENT') is not None
 
 
-def _take_photo_android(target_path):
-    try:
-        from android.permissions import Permission, request_permissions
-
-        request_permissions([
-            Permission.CAMERA,
-            Permission.READ_EXTERNAL_STORAGE,
-            Permission.WRITE_EXTERNAL_STORAGE,
-        ])
-    except (ImportError, AttributeError) as exc:
-        print(f'No se pudieron solicitar permisos de cámara: {exc}')
-
-    try:
-        from android import activity
-        from jnius import autoclass
-
-        Intent = autoclass('android.content.Intent')
-        MediaStore = autoclass('android.provider.MediaStore')
-        Uri = autoclass('android.net.Uri')
-        File = autoclass('java.io.File')
-
-        java_file = File(target_path)
-        uri = Uri.fromFile(java_file)
-        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
-        activity.startActivity(intent)
-        return target_path
-    except (ImportError, AttributeError) as exc:
-        print(f'No se pudo abrir la cámara nativa: {exc}')
-        return target_path
-
-
 def take_photo(filename='foto_direccion.jpg', quality=0.8):
     del quality
     target_path = _resolve_path(filename)
@@ -129,7 +103,11 @@ def take_photo(filename='foto_direccion.jpg', quality=0.8):
         return target_path
 
     if _is_android():
-        return _take_photo_android(target_path)
+        print(
+            'La captura Android es asíncrona; usa '
+            'android_services.capture_photo desde la interfaz.'
+        )
+        return target_path
 
     try:
         import cv2
@@ -272,7 +250,7 @@ def asignar_prioridad(parada, prioridad):
     if not isinstance(parada, dict):
         return parada
     prioridad_valida = prioridad.lower().strip() if isinstance(prioridad, str) else 'media'
-    if prioridad_valida not in {'baja', 'media', 'alta'}:
+    if prioridad_valida not in PRIORITY_ORDER:
         prioridad_valida = 'media'
     parada['prioridad'] = prioridad_valida
     return parada
@@ -288,6 +266,23 @@ def _haversine(lat1, lng1, lat2, lng2):
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def coordenadas_validas(lat, lng):
+    """Return whether latitude and longitude form a real geographic point."""
+    if (
+        isinstance(lat, bool)
+        or isinstance(lng, bool)
+        or not isinstance(lat, (int, float))
+        or not isinstance(lng, (int, float))
+    ):
+        return False
+    return (
+        math.isfinite(lat)
+        and math.isfinite(lng)
+        and -90 <= lat <= 90
+        and -180 <= lng <= 180
+    )
+
+
 def _nearest_neighbor(paradas, origen_lat=None, origen_lng=None):
     """Ordena *paradas* con la heurística del vecino más cercano.
 
@@ -296,8 +291,10 @@ def _nearest_neighbor(paradas, origen_lat=None, origen_lng=None):
     repartidor (``origen_lat``/``origen_lng``) o, si es ``None``, el primer
     elemento de la lista.
     """
-    candidatos = [p for p in paradas if isinstance(p.get('lat'), (int, float))
-                  and isinstance(p.get('lng'), (int, float))]
+    candidatos = [
+        p for p in paradas
+        if coordenadas_validas(p.get('lat'), p.get('lng'))
+    ]
     sin_coords = [p for p in paradas if p not in candidatos]
 
     if not candidatos:
@@ -421,8 +418,8 @@ def dictar_direccion():
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, 'es-ES')
-            from android import activity
-            activity.startActivityForResult(intent, 1001)
+            from android import mActivity
+            mActivity.startActivityForResult(intent, 1001)
             return ''
         except Exception as exc:
             print(f'No se pudo iniciar reconocimiento de voz en Android: {exc}')
@@ -545,19 +542,19 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
 
     if hora_actual >= 19:
         # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
-        orden = {'alta': 0, 'media': 1, 'baja': 2}
-        grupos = {'alta': [], 'media': [], 'baja': []}
+        grupos = {prioridad: [] for prioridad in PRIORITY_ORDER}
         for p in paradas_validas:
-            grupos[p.get('prioridad', 'media')].append(p)
+            prioridad = str(p.get('prioridad', 'media')).lower()
+            grupos[prioridad if prioridad in grupos else 'media'].append(p)
 
         resultado = []
         cur_lat, cur_lng = origen_lat, origen_lng
-        for nivel in ('alta', 'media', 'baja'):
+        for nivel in PRIORITY_ORDER:
             grupo_ordenado = _nearest_neighbor(grupos[nivel], cur_lat, cur_lng)
             if grupo_ordenado:
                 resultado.extend(grupo_ordenado)
                 ultimo = grupo_ordenado[-1]
-                if isinstance(ultimo.get('lat'), (int, float)):
+                if coordenadas_validas(ultimo.get('lat'), ultimo.get('lng')):
                     cur_lat, cur_lng = ultimo['lat'], ultimo['lng']
         return resultado
 
@@ -581,24 +578,40 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if not paradas:
         return 'No hay paradas'
 
+    if not coordenadas_validas(origen_lat, origen_lng):
+        return (
+            'No hay una ubicación de origen válida. Activa la ubicación del '
+            'dispositivo, pulsa "Ubicación" y vuelve a intentarlo.'
+        )
+
+    paradas_invalidas = [
+        p for p in paradas
+        if not isinstance(p, dict)
+        or not coordenadas_validas(p.get('lat'), p.get('lng'))
+    ]
+    if paradas_invalidas:
+        return (
+            'Hay paradas sin coordenadas válidas. Corrige o elimina esas '
+            'direcciones antes de optimizar la ruta.'
+        )
+
     paradas_priorizadas = [
         p for p in priorizar_paradas(paradas, modo, hora_actual, origen_lat, origen_lng)
-        if isinstance(p.get('lat'), (int, float)) and isinstance(p.get('lng'), (int, float))
+        if coordenadas_validas(p.get('lat'), p.get('lng'))
     ]
-    if not paradas_priorizadas:
-        return 'No hay paradas con coordenadas válidas'
 
     travelmode_map = {'pie': 'walking', 'coche': 'driving', 'moto': 'driving'}
     travelmode = travelmode_map.get((modo or 'moto').lower().strip(), 'driving')
 
     base_url = f'https://www.google.com/maps/dir/?api=1&travelmode={travelmode}'
+    origen = f'&origin={origen_lat},{origen_lng}'
     destino = f'&destination={paradas_priorizadas[-1]["lat"]},{paradas_priorizadas[-1]["lng"]}'
     waypoints = ''
     if len(paradas_priorizadas) > 1:
         w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas[:-1]]
         waypoints = '&waypoints=' + '|'.join(w_coords)
 
-    return base_url + destino + waypoints
+    return base_url + origen + destino + waypoints
 
 
 def main():

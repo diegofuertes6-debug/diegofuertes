@@ -47,6 +47,31 @@ def has_location_permission(denied):
     return any(permission not in denied for permission in LOCATION_PERMISSIONS)
 
 
+def is_location_enabled():
+    """Return whether Android has at least one usable location provider."""
+    if not is_android():
+        return True
+
+    try:
+        from android import mActivity
+        from jnius import autoclass
+
+        Context = autoclass('android.content.Context')
+        BuildVersion = autoclass('android.os.Build$VERSION')
+        LocationManager = autoclass('android.location.LocationManager')
+        manager = mActivity.getSystemService(Context.LOCATION_SERVICE)
+        if manager is None:
+            return False
+        if BuildVersion.SDK_INT >= 28:
+            return bool(manager.isLocationEnabled())
+        return bool(
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            or manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        )
+    except Exception:
+        return False
+
+
 def request_runtime_permissions(permissions, callback):
     """Request only missing permissions and report ``(granted, denied)``."""
     permissions = tuple(permissions)
@@ -96,124 +121,78 @@ def capture_photo(filename, on_complete, on_error):
             on_error(f'No se pudo abrir la cámara: {exc}')
         return
 
+    if _camera_callback is not None:
+        on_error('Ya hay una captura de cámara en curso.')
+        return
+
+    activity_module = None
+    output_uri = None
     try:
-        from android import activity
+        from android import activity as activity_module
         from android import mActivity
         from jnius import autoclass, cast
 
+        ClipData = autoclass('android.content.ClipData')
+        File = autoclass('java.io.File')
+        FileProvider = autoclass('androidx.core.content.FileProvider')
         Intent = autoclass('android.content.Intent')
         MediaStore = autoclass('android.provider.MediaStore')
-        BuildVersion = autoclass('android.os.Build$VERSION')
-        output_uri = None
 
-        if BuildVersion.SDK_INT >= 29:
-            ContentValues = autoclass('android.content.ContentValues')
-            Environment = autoclass('android.os.Environment')
-            values = ContentValues()
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, 'direccion_temporal.jpg')
-            values.put(MediaStore.Images.Media.MIME_TYPE, 'image/jpeg')
-            values.put(
-                MediaStore.Images.Media.RELATIVE_PATH,
-                f'{Environment.DIRECTORY_PICTURES}/Repartidor',
-            )
-            values.put(MediaStore.Images.Media.IS_PENDING, 1)
-            output_uri = mActivity.getContentResolver().insert(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                values,
-            )
-            if output_uri is None:
-                raise OSError('no se pudo reservar la captura temporal')
+        parent = os.path.dirname(filename)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        output_file = File(filename)
+        authority = f'{mActivity.getPackageName()}.fileprovider'
+        output_uri = FileProvider.getUriForFile(mActivity, authority, output_file)
 
-        def on_activity_result(request_code, result_code, data):
+        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        intent.putExtra(
+            MediaStore.EXTRA_OUTPUT,
+            cast('android.os.Parcelable', output_uri),
+        )
+        intent.setClipData(ClipData.newRawUri('captura', output_uri))
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        if intent.resolveActivity(mActivity.getPackageManager()) is None:
+            on_error('No hay ninguna aplicación de cámara disponible.')
+            return
+
+        def on_activity_result(request_code, result_code, _data):
             global _camera_callback
             if request_code != CAMERA_REQUEST_CODE:
                 return
-            activity.unbind(on_activity_result=on_activity_result)
+            activity_module.unbind(on_activity_result=on_activity_result)
             _camera_callback = None
             if result_code != -1:
-                _delete_media_uri(mActivity, output_uri)
-                on_error('No se capturó ninguna imagen.')
+                _remove_file(filename)
+                on_error('Captura cancelada. No se guardó ninguna imagen.')
                 return
-            try:
-                if output_uri is not None:
-                    _copy_media_to_private_file(mActivity, output_uri, filename)
-                else:
-                    _save_camera_thumbnail(data, filename)
-                if os.path.isfile(filename) and os.path.getsize(filename) > 0:
-                    on_complete(filename)
-                else:
-                    on_error('La cámara no devolvió una imagen válida.')
-            except Exception as exc:
-                on_error(f'No se pudo guardar la captura: {exc}')
-            finally:
-                _delete_media_uri(mActivity, output_uri)
+            if os.path.isfile(filename) and os.path.getsize(filename) > 0:
+                on_complete(filename)
+            else:
+                _remove_file(filename)
+                on_error('La cámara no devolvió una imagen válida.')
 
         _camera_callback = on_activity_result
-        activity.bind(on_activity_result=on_activity_result)
-        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        if output_uri is not None:
-            intent.putExtra(
-                MediaStore.EXTRA_OUTPUT,
-                cast('android.os.Parcelable', output_uri),
-            )
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        activity.startActivityForResult(intent, CAMERA_REQUEST_CODE)
+        activity_module.bind(on_activity_result=on_activity_result)
+        mActivity.startActivityForResult(intent, CAMERA_REQUEST_CODE)
     except Exception as exc:
-        try:
-            activity.unbind(on_activity_result=_camera_callback)
-        except Exception:
-            pass
-        try:
-            _delete_media_uri(mActivity, output_uri)
-        except NameError:
-            pass
+        if activity_module is not None and _camera_callback is not None:
+            try:
+                activity_module.unbind(on_activity_result=_camera_callback)
+            except Exception:
+                pass
         _camera_callback = None
+        _remove_file(filename)
         on_error(f'No se pudo abrir la cámara: {exc}')
 
 
-def _copy_media_to_private_file(activity, uri, filename):
-    from jnius import autoclass
-
-    FileOutputStream = autoclass('java.io.FileOutputStream')
-    FileUtils = autoclass('android.os.FileUtils')
-    input_stream = activity.getContentResolver().openInputStream(uri)
-    if input_stream is None:
-        raise OSError('no se pudo leer la captura temporal')
-    output_stream = FileOutputStream(filename)
+def _remove_file(filename):
     try:
-        FileUtils.copy(input_stream, output_stream)
-        output_stream.flush()
-    finally:
-        input_stream.close()
-        output_stream.close()
-
-
-def _save_camera_thumbnail(data, filename):
-    from jnius import autoclass, cast
-
-    if data is None or data.getExtras() is None:
-        raise ValueError('la cámara no devolvió una imagen')
-    Bitmap = autoclass('android.graphics.Bitmap')
-    FileOutputStream = autoclass('java.io.FileOutputStream')
-    bitmap = cast('android.graphics.Bitmap', data.getExtras().get('data'))
-    if bitmap is None:
-        raise ValueError('la cámara no devolvió una imagen')
-    output_stream = FileOutputStream(filename)
-    try:
-        if not bitmap.compress(Bitmap.CompressFormat.JPEG, 95, output_stream):
-            raise OSError('no se pudo guardar la imagen temporal')
-        output_stream.flush()
-    finally:
-        output_stream.close()
-
-
-def _delete_media_uri(activity, uri):
-    if uri is not None:
-        try:
-            activity.getContentResolver().delete(uri, None, None)
-        except Exception as exc:
-            print(f'No se pudo eliminar la captura temporal de MediaStore: {exc}')
+        if os.path.isfile(filename):
+            os.remove(filename)
+    except OSError:
+        pass
 
 
 def recognize_image_text(filename, on_success, on_error):
@@ -280,6 +259,13 @@ def recognize_image_text(filename, on_success, on_error):
 
 def get_current_location(on_location, on_error):
     """Request a single GPS fix and stop listening immediately afterward."""
+    if is_android() and not is_location_enabled():
+        on_error(
+            'La ubicación del dispositivo está desactivada. '
+            'Actívala en Ajustes y vuelve a intentarlo.'
+        )
+        return
+
     try:
         from plyer import gps
     except (ImportError, AttributeError):
@@ -344,6 +330,7 @@ def start_speech_recognition(on_success, on_error):
 
     try:
         from android import activity
+        from android import mActivity
         from jnius import autoclass
 
         Intent = autoclass('android.content.Intent')
@@ -376,7 +363,7 @@ def start_speech_recognition(on_success, on_error):
 
         _speech_callback = on_activity_result
         activity.bind(on_activity_result=on_activity_result)
-        activity.startActivityForResult(intent, SPEECH_REQUEST_CODE)
+        mActivity.startActivityForResult(intent, SPEECH_REQUEST_CODE)
     except Exception as exc:
         try:
             activity.unbind(on_activity_result=_speech_callback)
