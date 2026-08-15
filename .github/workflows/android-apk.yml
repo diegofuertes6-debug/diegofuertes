@@ -49,6 +49,9 @@ jobs:
           mv "$RUNNER_TEMP/cmdline-tools/cmdline-tools/"* \
             "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
 
+          # Buildozer 1.5.0 still resolves sdkmanager from the legacy tools layout.
+          ln -s cmdline-tools/latest "$ANDROID_SDK_ROOT/tools"
+
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
@@ -56,6 +59,7 @@ jobs:
             "platforms;android-31" \
             "build-tools;31.0.0"
 
+          test -x "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
           test -x "$ANDROID_SDK_ROOT/build-tools/31.0.0/aidl"
           test -f "$ANDROID_SDK_ROOT/platforms/android-31/android.jar"
 
