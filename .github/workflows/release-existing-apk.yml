@@ -17,27 +17,45 @@ jobs:
         id: locate
         shell: bash
         run: |
-          set -e
-          shopt -s nullglob
-          candidates=(bin/**/*.apk bin/*.apk .github/workflows/*.apk)
+          set -euo pipefail
+          if ! source_apk="$(python3 - <<'PY'
+          from pathlib import Path
 
-          if [ ${#candidates[@]} -eq 0 ]; then
-            echo "No se encontró ninguna APK en bin/ ni en .github/workflows/"
+          roots = (Path("bin"), Path(".github/workflows"))
+          candidates = [
+              path for root in roots if root.exists() for path in root.rglob("*.apk")
+          ]
+
+          if not candidates:
+              raise SystemExit(1)
+
+          latest = max(candidates, key=lambda path: path.stat().st_mtime)
+          print(latest.as_posix())
+          PY
+          )"; then
+            echo "No se encontró ninguna APK en bin/ ni en .github/workflows/." >&2
             exit 1
           fi
-
-          source_apk="${candidates[0]}"
+ 
+          artifact_name="$(basename "$source_apk")"
+          safe_artifact_name="$(printf '%s' "$artifact_name" | tr -cs 'A-Za-z0-9._-' '-')"
+          safe_artifact_name="${safe_artifact_name#-}"
+          safe_artifact_name="${safe_artifact_name%-}"
+          if [ -z "$safe_artifact_name" ]; then
+            safe_artifact_name="repartidor-apk"
+          fi
           mkdir -p release
-          cp "$source_apk" "release/repartidor-firmada.apk"
+          cp "$source_apk" "release/$artifact_name"
 
           echo "source_apk=$source_apk" >> "$GITHUB_OUTPUT"
-          echo "release_apk=release/repartidor-firmada.apk" >> "$GITHUB_OUTPUT"
-          ls -l "$source_apk" "release/repartidor-firmada.apk"
+          echo "release_apk=release/$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$safe_artifact_name" >> "$GITHUB_OUTPUT"
+          ls -l "$source_apk" "release/$artifact_name"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: repartidor-apk
+          name: ${{ steps.locate.outputs.artifact_name }}
           path: ${{ steps.locate.outputs.release_apk }}
 
       - name: Publish GitHub release
