@@ -197,8 +197,11 @@ class BuildozerAndroidConfigTests(unittest.TestCase):
     def _get_setting(self, key):
         for line in self._buildozer_lines():
             clean = line.strip()
-            if clean.startswith(f'{key} ='):
-                return clean.split('=', 1)[1].strip()
+            if '=' not in clean:
+                continue
+            current_key, _, value = clean.partition('=')
+            if current_key.strip() == key:
+                return value.strip()
         self.fail(f'No se encontró {key} en buildozer.spec')
 
     def test_android_api_cumple_requisito_play_store(self):
