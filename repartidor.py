@@ -34,8 +34,24 @@ API_KEY_CANDIDATES = (
 PRIORITY_ORDER = ('alta', 'media', 'baja')
 PRIORITY_COLORS = {
     'alta': (1.0, 0.0, 0.0, 1.0),
-    'media': (1.0, 1.0, 0.0, 1.0),
+    'media': (1.0, 0.6, 0.0, 1.0),
     'baja': (0.0, 1.0, 0.0, 1.0),
+}
+PAQUETERIAS = ('Correos', 'Amazon', 'Adidas', 'SEUR', 'MRW', 'DHL', 'Otra')
+UBICACIONES_VEHICULO = ('Delante', 'En medio', 'Atrás', 'Izquierda', 'Derecha')
+TAMANOS_PAQUETE = ('Pequeño', 'Mediano', 'Grande')
+TIPOS_OPERACION = ('Recogida', 'Entrega')
+NOTIFICACIONES = ('Sin notificación', 'SMS', 'Correo', 'Llamada')
+METODOS_CAPTURA = ('manual', 'cámara', 'micrófono')
+DEFAULT_STOP_VALUES = {
+    'prioridad': 'media',
+    'estado': 'pendiente',
+    'paqueteria': 'Otra',
+    'ubicacion_vehiculo': 'En medio',
+    'tamaño_paquete': 'Mediano',
+    'tipo_operacion': 'Entrega',
+    'notificacion': 'Sin notificación',
+    'metodo_captura': 'manual',
 }
 
 try:
@@ -214,6 +230,24 @@ API_KEY = cargar_api_key()
 lista_paradas = []
 
 
+def completar_datos_parada(parada, **campos):
+    """Normaliza una parada con los campos requeridos por la app 2.0."""
+    if not isinstance(parada, dict):
+        return parada
+
+    parada.setdefault('lat', None)
+    parada.setdefault('lng', None)
+    parada['address'] = str(parada.get('address') or '').strip()
+    for clave, valor_por_defecto in DEFAULT_STOP_VALUES.items():
+        valor = campos.get(clave, parada.get(clave, valor_por_defecto))
+        if isinstance(valor, str):
+            valor = valor.strip() or valor_por_defecto
+        elif valor is None:
+            valor = valor_por_defecto
+        parada[clave] = valor
+    return parada
+
+
 def obtener_coordenadas(direccion, cp):
     if not direccion or not cp:
         return None
@@ -242,13 +276,18 @@ def obtener_coordenadas(direccion, cp):
 
     if res.get('status') == 'OK' and res.get('results'):
         loc = res['results'][0]['geometry']['location']
-        return {'lat': loc['lat'], 'lng': loc['lng'], 'address': full_address, 'prioridad': 'media', 'estado': 'pendiente'}
+        return completar_datos_parada({
+            'lat': loc['lat'],
+            'lng': loc['lng'],
+            'address': full_address,
+        })
     return None
 
 
 def asignar_prioridad(parada, prioridad):
     if not isinstance(parada, dict):
         return parada
+    completar_datos_parada(parada)
     prioridad_valida = prioridad.lower().strip() if isinstance(prioridad, str) else 'media'
     if prioridad_valida not in PRIORITY_ORDER:
         prioridad_valida = 'media'
@@ -475,13 +514,11 @@ def buscar_direccion_texto(texto):
 
     if res.get('status') == 'OK' and res.get('results'):
         loc = res['results'][0]['geometry']['location']
-        return {
+        return completar_datos_parada({
             'lat': loc['lat'],
             'lng': loc['lng'],
             'address': res['results'][0].get('formatted_address', texto),
-            'prioridad': 'media',
-            'estado': 'pendiente',
-        }
+        })
     print(f'No se encontraron resultados para "{texto}".')
     return None
 
@@ -538,12 +575,17 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if hora_actual is None:
         hora_actual = datetime.now().hour
 
-    paradas_validas = [p for p in paradas if isinstance(p, dict)]
+    paradas_validas = [completar_datos_parada(p) for p in paradas if isinstance(p, dict)]
+    pendientes = [p for p in paradas_validas if p.get('estado') != 'realizada']
+    realizadas = [p for p in paradas_validas if p.get('estado') == 'realizada']
+
+    if not pendientes:
+        return realizadas
 
     if hora_actual >= 19:
         # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
         grupos = {prioridad: [] for prioridad in PRIORITY_ORDER}
-        for p in paradas_validas:
+        for p in pendientes:
             prioridad = str(p.get('prioridad', 'media')).lower()
             grupos[prioridad if prioridad in grupos else 'media'].append(p)
 
@@ -556,10 +598,80 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
                 ultimo = grupo_ordenado[-1]
                 if coordenadas_validas(ultimo.get('lat'), ultimo.get('lng')):
                     cur_lat, cur_lng = ultimo['lat'], ultimo['lng']
-        return resultado
+        return resultado + realizadas
 
     # Antes de las 19:00: optimización por vecino más cercano globalmente
-    return _nearest_neighbor(paradas_validas, origen_lat, origen_lng)
+    return _nearest_neighbor(pendientes, origen_lat, origen_lng) + realizadas
+
+
+def calcular_distancia_total(paradas, origen_lat, origen_lng, retorno_al_origen=True):
+    """Suma la distancia total de las paradas pendientes."""
+    if not coordenadas_validas(origen_lat, origen_lng):
+        return 0.0
+
+    ruta = [
+        p for p in paradas
+        if isinstance(p, dict)
+        and p.get('estado') != 'realizada'
+        and coordenadas_validas(p.get('lat'), p.get('lng'))
+    ]
+    if not ruta:
+        return 0.0
+
+    distancia_total = 0.0
+    cur_lat, cur_lng = origen_lat, origen_lng
+    for parada in ruta:
+        distancia_total += _haversine(cur_lat, cur_lng, parada['lat'], parada['lng'])
+        cur_lat, cur_lng = parada['lat'], parada['lng']
+
+    if retorno_al_origen:
+        distancia_total += _haversine(cur_lat, cur_lng, origen_lat, origen_lng)
+    return distancia_total
+
+
+def estimar_tiempo_ruta(paradas, modo='moto', origen_lat=None, origen_lng=None, retorno_al_origen=True):
+    """Estima la duración de la ruta en minutos según el modo de transporte."""
+    velocidades_kmh = {'pie': 5.0, 'coche': 35.0, 'moto': 30.0}
+    modo = (modo or 'moto').lower().strip()
+    velocidad = velocidades_kmh.get(modo, velocidades_kmh['moto'])
+    distancia_total = calcular_distancia_total(
+        paradas, origen_lat, origen_lng, retorno_al_origen=retorno_al_origen
+    )
+    if not distancia_total or velocidad <= 0:
+        return 0
+    return max(1, int(round((distancia_total / velocidad) * 60)))
+
+
+def _formatear_info_parada(indice, parada):
+    return (
+        f'{indice}. {parada.get("address", "Sin dirección")} · '
+        f'{parada.get("paqueteria", DEFAULT_STOP_VALUES["paqueteria"])} · '
+        f'{parada.get("ubicacion_vehiculo", DEFAULT_STOP_VALUES["ubicacion_vehiculo"])} · '
+        f'{parada.get("tamaño_paquete", DEFAULT_STOP_VALUES["tamaño_paquete"])} · '
+        f'{parada.get("tipo_operacion", DEFAULT_STOP_VALUES["tipo_operacion"])}'
+    )
+
+
+def generar_resumen_ruta(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
+    """Devuelve un resumen textual de la ruta pendiente."""
+    if not paradas:
+        return 'No hay paradas'
+    paradas_priorizadas = priorizar_paradas(
+        paradas, modo=modo, hora_actual=hora_actual,
+        origen_lat=origen_lat, origen_lng=origen_lng,
+    )
+    pendientes = [p for p in paradas_priorizadas if p.get('estado') != 'realizada']
+    if not pendientes:
+        return 'No hay paradas pendientes.'
+
+    minutos = estimar_tiempo_ruta(
+        pendientes, modo=modo, origen_lat=origen_lat, origen_lng=origen_lng
+    )
+    detalle = '\n'.join(
+        _formatear_info_parada(indice, parada)
+        for indice, parada in enumerate(pendientes, start=1)
+    )
+    return f'Ruta optimizada · {minutos} min estimados\n{detalle}'
 
 
 def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
@@ -584,8 +696,15 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
             'dispositivo, pulsa "Ubicación" y vuelve a intentarlo.'
         )
 
+    paradas_pendientes = [
+        completar_datos_parada(p) for p in paradas
+        if isinstance(p, dict) and p.get('estado') != 'realizada'
+    ]
+    if not paradas_pendientes:
+        return 'No hay paradas pendientes'
+
     paradas_invalidas = [
-        p for p in paradas
+        p for p in paradas_pendientes
         if not isinstance(p, dict)
         or not coordenadas_validas(p.get('lat'), p.get('lng'))
     ]
@@ -596,20 +715,22 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
         )
 
     paradas_priorizadas = [
-        p for p in priorizar_paradas(paradas, modo, hora_actual, origen_lat, origen_lng)
+        p for p in priorizar_paradas(
+            paradas_pendientes, modo, hora_actual, origen_lat, origen_lng
+        )
         if coordenadas_validas(p.get('lat'), p.get('lng'))
     ]
+    if not paradas_priorizadas:
+        return 'No hay paradas pendientes con coordenadas válidas'
 
     travelmode_map = {'pie': 'walking', 'coche': 'driving', 'moto': 'driving'}
     travelmode = travelmode_map.get((modo or 'moto').lower().strip(), 'driving')
 
     base_url = f'https://www.google.com/maps/dir/?api=1&travelmode={travelmode}'
     origen = f'&origin={origen_lat},{origen_lng}'
-    destino = f'&destination={paradas_priorizadas[-1]["lat"]},{paradas_priorizadas[-1]["lng"]}'
-    waypoints = ''
-    if len(paradas_priorizadas) > 1:
-        w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas[:-1]]
-        waypoints = '&waypoints=' + '|'.join(w_coords)
+    destino = f'&destination={origen_lat},{origen_lng}'
+    w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas]
+    waypoints = '&waypoints=' + '|'.join(w_coords) if w_coords else ''
 
     return base_url + origen + destino + waypoints
 
