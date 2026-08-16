@@ -20,6 +20,7 @@ import os
 import re
 from datetime import datetime
 import math
+from urllib.parse import quote
 
 DEFAULT_PHOTO_FILENAME = 'foto_direccion.jpg'
 API_KEY_ENV_VAR = 'GOOGLE_MAPS_API_KEY'
@@ -37,6 +38,25 @@ PRIORITY_COLORS = {
     'media': (1.0, 1.0, 0.0, 1.0),
     'baja': (0.0, 1.0, 0.0, 1.0),
 }
+TRANSPORT_SPEEDS_KMH = {'pie': 5.0, 'coche': 35.0, 'moto': 30.0}
+CAPTURE_METHODS = {
+    'cámara': 'camara',
+    'camara': 'camara',
+    'micrófono': 'microfono',
+    'microfono': 'microfono',
+    'voz': 'microfono',
+    'búsqueda': 'manual',
+    'busqueda': 'manual',
+    'entrada': 'manual',
+    'manual': 'manual',
+}
+_PREFIJO_DIRECCION_RE = re.compile(
+    r'\b(?:Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
+    r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
+    re.IGNORECASE,
+)
+_CODIGO_POSTAL_RE = re.compile(r'\b\d{5}\b')
+_NUMERO_PORTAL_RE = re.compile(r'\b\d{1,4}[A-Za-z]?(?:[-/]\d{1,4}[A-Za-z]?)?\b')
 
 try:
     from dotenv import load_dotenv
@@ -155,11 +175,17 @@ def leer_texto_imagen(path):
 
 def extraer_direccion_texto_ocr(texto):
     """Extract a likely Spanish street address and postal code from OCR text."""
+    componentes = extraer_componentes_direccion_ocr(texto)
+    if componentes:
+        direccion = componentes.get('calle', '')
+        if componentes.get('numero'):
+            direccion = f'{direccion} {componentes["numero"]}'.strip()
+        return direccion, componentes.get('codigo_postal', '')
     candidatos = extraer_candidatos_direccion_ocr(texto)
     if not candidatos:
         return '', ''
     direccion = candidatos[0]
-    cp_match = re.search(r'\b\d{5}\b', direccion)
+    cp_match = _CODIGO_POSTAL_RE.search(direccion)
     cp_final = cp_match.group() if cp_match else ''
     if cp_final:
         direccion = re.sub(rf'(?:,\s*)?\b{re.escape(cp_final)}\b.*$', '', direccion).strip(' ,')
@@ -173,38 +199,113 @@ def normalizar_direccion(texto):
     return texto
 
 
+def _normalizar_metodo_captura(origen):
+    origen = normalizar_direccion(origen).casefold()
+    return CAPTURE_METHODS.get(origen, 'manual')
+
+
+def _extraer_componentes_direccion(candidato):
+    candidato = normalizar_direccion(candidato)
+    if not candidato:
+        return {}
+
+    prefijo = _PREFIJO_DIRECCION_RE.match(candidato)
+    if prefijo is None:
+        return {}
+
+    cp_match = _CODIGO_POSTAL_RE.search(candidato)
+    if cp_match is None:
+        return {}
+
+    tipo_via = normalizar_direccion(prefijo.group(0))
+    tramo_pre_cp = normalizar_direccion(candidato[:cp_match.start()])
+    tramo_post_cp = normalizar_direccion(candidato[cp_match.end():].strip(' ,'))
+    sin_prefijo = normalizar_direccion(tramo_pre_cp[prefijo.end():])
+
+    numero = ''
+    numero_match = _NUMERO_PORTAL_RE.search(sin_prefijo)
+    if numero_match is not None:
+        numero = numero_match.group(0)
+        nombre_calle = normalizar_direccion(
+            f'{sin_prefijo[:numero_match.start()]} {sin_prefijo[numero_match.end():]}'
+        )
+    else:
+        nombre_calle = sin_prefijo
+
+    calle = normalizar_direccion(f'{tipo_via} {nombre_calle}')
+    poblacion = normalizar_direccion(tramo_post_cp)
+    codigo_postal = cp_match.group(0)
+
+    direccion = calle
+    if numero:
+        direccion = f'{direccion} {numero}'.strip()
+    if codigo_postal or poblacion:
+        direccion = f'{direccion}, {normalizar_direccion(f"{codigo_postal} {poblacion}")}'.strip(', ')
+
+    return {
+        'calle': calle,
+        'nombre_calle': nombre_calle,
+        'numero': numero,
+        'codigo_postal': codigo_postal,
+        'poblacion': poblacion,
+        'address': normalizar_direccion(direccion),
+    }
+
+
+def extraer_componentes_direccion_ocr(texto):
+    """Return structured OCR address parts for the most plausible candidate."""
+    candidatos = extraer_candidatos_direccion_ocr(texto)
+    if not candidatos:
+        return {}
+    return _extraer_componentes_direccion(candidatos[0])
+
+
 def extraer_candidatos_direccion_ocr(texto):
     """Return plausible address lines ordered by confidence, without OCR noise."""
     texto = str(texto or '').replace('\r', '\n')
     if not texto.strip():
         return []
-
-    prefijo = re.compile(
-        r'\b(?:Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
-        r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
-        re.IGNORECASE,
-    )
-    codigo_postal = re.compile(r'\b\d{5}\b')
     lineas = [normalizar_direccion(linea) for linea in texto.split('\n')]
     candidatos = []
     for indice, linea in enumerate(lineas):
-        coincidencia = prefijo.search(linea) if linea else None
+        coincidencia = _PREFIJO_DIRECCION_RE.search(linea) if linea else None
         if coincidencia is None:
             continue
-        candidato = linea[coincidencia.start():]
-        for siguiente in lineas[indice + 1:indice + 3]:
+        fragmentos = [linea[coincidencia.start():]]
+        for siguiente in lineas[indice + 1:indice + 5]:
             if not siguiente:
                 continue
             es_numero_portal = bool(
-                re.fullmatch(r'\d{1,4}[A-Za-z]?(?:[-/]\d{1,4})?', siguiente)
+                re.fullmatch(r'\d{1,4}[A-Za-z]?(?:[-/]\d{1,4}[A-Za-z]?)?', siguiente)
             )
-            if es_numero_portal or (
-                codigo_postal.search(siguiente) and len(siguiente) <= 60
+            parece_poblacion = bool(
+                re.fullmatch(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ.\- ]{2,40}', siguiente)
+            )
+            if (
+                len(fragmentos[-1]) <= 16
+                and not es_numero_portal
+                and not _CODIGO_POSTAL_RE.search(siguiente)
+                and not _PREFIJO_DIRECCION_RE.search(siguiente)
             ):
-                candidato = f'{candidato}, {siguiente}'
-            if codigo_postal.search(siguiente):
+                fragmentos[-1] = normalizar_direccion(f'{fragmentos[-1]} {siguiente}')
+                continue
+            if es_numero_portal or (
+                _CODIGO_POSTAL_RE.search(siguiente) and len(siguiente) <= 60
+            ) or (
+                parece_poblacion and any(_CODIGO_POSTAL_RE.search(parte) for parte in fragmentos)
+            ):
+                fragmentos.append(siguiente)
+            if _CODIGO_POSTAL_RE.search(siguiente) and ',' in siguiente:
                 break
-        candidato = normalizar_direccion(candidato)
+            if (
+                parece_poblacion
+                and any(_CODIGO_POSTAL_RE.search(parte) for parte in fragmentos)
+            ):
+                break
+        candidato = normalizar_direccion(', '.join(fragmentos))
+        componentes = _extraer_componentes_direccion(candidato)
+        if componentes.get('address'):
+            candidato = componentes['address']
         if len(candidato) >= 6 and candidato.casefold() not in {
             existente.casefold() for existente in candidatos
         }:
@@ -214,7 +315,7 @@ def extraer_candidatos_direccion_ocr(texto):
         candidatos,
         key=lambda candidato: (
             not bool(re.search(r'\d', candidato)),
-            not bool(codigo_postal.search(candidato)),
+            not bool(_CODIGO_POSTAL_RE.search(candidato)),
             len(candidato),
         ),
     )
@@ -314,6 +415,7 @@ def validar_y_anadir_parada(
     prioridad='media',
     paqueteria=None,
     notificacion=None,
+    origen='manual',
 ):
     """Validate, geocode and append a stop through one consistent operation.
 
@@ -348,10 +450,13 @@ def validar_y_anadir_parada(
             return None, 'Esa dirección ya está en el listado.'
 
     parada['address'] = direccion_resuelta
+    parada['nombre'] = parada.get('nombre') or direccion
+    parada['numero'] = parada.get('numero') or (len(paradas) + 1)
     parada['estado'] = parada.get('estado') or 'pendiente'
     asignar_prioridad(parada, prioridad)
-    parada['paqueteria'] = paqueteria
-    parada['notificacion'] = notificacion
+    parada['paqueteria'] = paqueteria or parada.get('paqueteria') or ''
+    parada['notificacion'] = notificacion or parada.get('notificacion') or ''
+    parada['metodo_captura'] = parada.get('metodo_captura') or _normalizar_metodo_captura(origen)
     paradas.append(parada)
     return parada, None
 
@@ -380,10 +485,13 @@ def iniciar_alta_parada(
 
     parada = {
         'address': direccion,
+        'nombre': direccion,
+        'numero': len(paradas) + 1,
         'estado': 'geolocalizando',
         'origen': origen,
-        'paqueteria': paqueteria,
-        'notificacion': notificacion,
+        'paqueteria': paqueteria or '',
+        'notificacion': notificacion or '',
+        'metodo_captura': _normalizar_metodo_captura(origen),
     }
     asignar_prioridad(parada, prioridad)
     paradas.append(parada)
@@ -440,6 +548,8 @@ def aplicar_alta_geocodificada(paradas, parada, resultado, detalle=''):
     parada['lat'] = resultado['lat']
     parada['lng'] = resultado['lng']
     parada['address'] = direccion_resuelta
+    parada['nombre'] = parada.get('nombre') or direccion
+    parada['numero'] = parada.get('numero') or (paradas.index(parada) + 1)
     parada['estado'] = 'geolocalizada'
     parada.pop('error', None)
     return parada, None
@@ -760,6 +870,65 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     return _nearest_neighbor(paradas_validas, origen_lat, origen_lng)
 
 
+def generar_url_ubicacion_individual(lat, lng, nombre=None, zoom=15):
+    """Genera una URL web de Google Maps para una ubicación concreta."""
+    if not coordenadas_validas(lat, lng):
+        return 'No hay coordenadas válidas para abrir Google Maps.'
+    query = f'{lat},{lng}'
+    url = f'https://maps.google.com/?q={quote(query, safe=",")}'
+    if nombre:
+        url += f'&label={quote(normalizar_direccion(nombre))}'
+    if zoom is not None:
+        url += f'&z={int(zoom)}'
+    return url
+
+
+def resumir_ruta(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
+    """Calcula distancia, tiempo aproximado y orden de visita de la ruta."""
+    if not paradas or not coordenadas_validas(origen_lat, origen_lng):
+        return None
+    paradas_ordenadas = priorizar_paradas(
+        paradas,
+        modo=modo,
+        hora_actual=hora_actual,
+        origen_lat=origen_lat,
+        origen_lng=origen_lng,
+    )
+    paradas_ordenadas = [
+        parada for parada in paradas_ordenadas
+        if isinstance(parada, dict) and coordenadas_validas(parada.get('lat'), parada.get('lng'))
+    ]
+    if not paradas_ordenadas:
+        return None
+
+    total_distancia_km = 0.0
+    segmentos = []
+    actual_lat, actual_lng = origen_lat, origen_lng
+    for numero, parada in enumerate(paradas_ordenadas, start=1):
+        distancia = _haversine(actual_lat, actual_lng, parada['lat'], parada['lng'])
+        total_distancia_km += distancia
+        segmentos.append({
+            'numero': numero,
+            'nombre': parada.get('nombre') or parada.get('address') or f'Parada {numero}',
+            'address': parada.get('address', ''),
+            'lat': parada['lat'],
+            'lng': parada['lng'],
+            'distancia_km': round(distancia, 2),
+        })
+        actual_lat, actual_lng = parada['lat'], parada['lng']
+
+    retorno_km = _haversine(actual_lat, actual_lng, origen_lat, origen_lng)
+    total_distancia_km += retorno_km
+    velocidad = TRANSPORT_SPEEDS_KMH.get((modo or 'moto').lower().strip(), TRANSPORT_SPEEDS_KMH['moto'])
+    tiempo_total_min = round((total_distancia_km / velocidad) * 60) if velocidad else 0
+    return {
+        'paradas': segmentos,
+        'distancia_total_km': round(total_distancia_km, 2),
+        'tiempo_total_min': int(tiempo_total_min),
+        'retorno_km': round(retorno_km, 2),
+    }
+
+
 def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
     """Genera la URL de Google Maps con las paradas optimizadas.
 
@@ -797,15 +966,17 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
         p for p in priorizar_paradas(paradas, modo, hora_actual, origen_lat, origen_lng)
         if coordenadas_validas(p.get('lat'), p.get('lng'))
     ]
+    if not paradas_priorizadas:
+        return 'No hay paradas con coordenadas válidas para abrir Google Maps.'
 
     travelmode_map = {'pie': 'walking', 'coche': 'driving', 'moto': 'driving'}
     travelmode = travelmode_map.get((modo or 'moto').lower().strip(), 'driving')
 
     base_url = f'https://www.google.com/maps/dir/?api=1&travelmode={travelmode}'
-    origen = f'&origin={origen_lat},{origen_lng}'
+    origen = f'&origin={quote(f"{origen_lat},{origen_lng}", safe=",")}'
     # A delivery route is closed: the current depot is both origin and destination.
-    destino = f'&destination={origen_lat},{origen_lng}'
-    w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas]
+    destino = f'&destination={quote(f"{origen_lat},{origen_lng}", safe=",")}'
+    w_coords = [quote(f"{p['lat']},{p['lng']}", safe=',') for p in paradas_priorizadas]
     waypoints = '&waypoints=' + '|'.join(w_coords)
 
     return base_url + origen + destino + waypoints

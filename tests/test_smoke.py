@@ -142,6 +142,27 @@ class ModoTransporteTests(unittest.TestCase):
         )
         self.assertIn('ubicación de origen válida', resultado)
 
+    def test_generar_url_ubicacion_individual(self):
+        url = repartidor.generar_url_ubicacion_individual(
+            40.4168, -3.7038, nombre='Calle Mayor 42'
+        )
+        self.assertEqual(
+            url,
+            'https://maps.google.com/?q=40.4168,-3.7038&label=Calle%20Mayor%2042&z=15',
+        )
+
+    def test_resumen_ruta_calcula_distancia_y_tiempo(self):
+        resumen = repartidor.resumir_ruta(
+            self._paradas_con_coords(),
+            modo='moto',
+            hora_actual=10,
+            origen_lat=39.9,
+            origen_lng=-2.9,
+        )
+        self.assertEqual([p['numero'] for p in resumen['paradas']], [1, 2])
+        self.assertGreater(resumen['distancia_total_km'], 0)
+        self.assertGreater(resumen['tiempo_total_min'], 0)
+
     def test_coordenadas_validan_rangos_y_booleanos(self):
         self.assertTrue(repartidor.coordenadas_validas(40.4, -3.7))
         self.assertFalse(repartidor.coordenadas_validas(True, -3.7))
@@ -280,6 +301,46 @@ class AndroidServicesTests(unittest.TestCase):
         finally:
             android_services._camera_callback = None
 
+    @patch('android_services.is_android', return_value=True)
+    def test_abrir_google_maps_android_usa_intent_nativo(self, _mock):
+        java_activity = MagicMock()
+        java_activity.getPackageManager.return_value = object()
+
+        class FakeIntent:
+            ACTION_VIEW = 'android.intent.action.VIEW'
+
+            def __init__(self, _action, uri):
+                self.uri = uri
+                self.package = None
+
+            def setPackage(self, package):
+                self.package = package
+
+            def resolveActivity(self, _manager):
+                return object()
+
+        android_module = types.ModuleType('android')
+        android_module.mActivity = java_activity
+        jnius_module = types.ModuleType('jnius')
+        jnius_module.autoclass = lambda name: {
+            'android.content.Intent': FakeIntent,
+            'android.net.Uri': types.SimpleNamespace(parse=lambda uri: uri),
+        }[name]
+        with patch.dict(
+            sys.modules,
+            {'android': android_module, 'jnius': jnius_module},
+        ):
+            resultado = android_services.abrir_google_maps(
+                40.4168,
+                -3.7038,
+                nombre='Calle Mayor 42',
+            )
+        self.assertTrue(resultado)
+        java_activity.startActivity.assert_called_once()
+        intent = java_activity.startActivity.call_args.args[0]
+        self.assertEqual(intent.package, 'com.google.android.apps.maps')
+        self.assertIn('geo:40.4168,-3.7038', intent.uri)
+
     def test_permisos_denegados_incluye_respuestas_ausentes(self):
         permisos = ['coarse', 'fine', 'camera']
         self.assertEqual(
@@ -377,8 +438,18 @@ class OcrDireccionTests(unittest.TestCase):
             repartidor.extraer_candidatos_direccion_ocr(
                 'C/ Mayor\n15\n28013 Madrid'
             ),
-            ['C/ Mayor, 15, 28013 Madrid'],
+            ['C/ Mayor 15, 28013 Madrid'],
         )
+
+    def test_ocr_extrae_componentes_estructurados(self):
+        componentes = repartidor.extraer_componentes_direccion_ocr(
+            'Entrega urgente\nCalle\nMayor\n42\n28001\nMadrid'
+        )
+        self.assertEqual(componentes['calle'], 'Calle Mayor')
+        self.assertEqual(componentes['numero'], '42')
+        self.assertEqual(componentes['codigo_postal'], '28001')
+        self.assertEqual(componentes['poblacion'], 'Madrid')
+        self.assertEqual(componentes['address'], 'Calle Mayor 42, 28001 Madrid')
 
 
 class AnadirParadaComunTests(unittest.TestCase):
@@ -399,6 +470,7 @@ class AnadirParadaComunTests(unittest.TestCase):
             prioridad='alta',
             paqueteria='Correos',
             notificacion='SMS',
+            origen='cámara',
         )
         self.assertIsNone(error)
         self.assertIs(parada, self.paradas[0])
@@ -407,6 +479,9 @@ class AnadirParadaComunTests(unittest.TestCase):
         self.assertEqual(parada['estado'], 'pendiente')
         self.assertEqual(parada['paqueteria'], 'Correos')
         self.assertEqual(parada['notificacion'], 'SMS')
+        self.assertEqual(parada['metodo_captura'], 'camara')
+        self.assertEqual(parada['numero'], 1)
+        self.assertEqual(parada['nombre'], 'Calle Mayor 15, 28013 Madrid')
 
     def test_rechaza_vacia_o_invalida_sin_geocodificar(self):
         for texto in ('', '   ', '1234'):
@@ -445,6 +520,7 @@ class AnadirParadaComunTests(unittest.TestCase):
         )
         self.assertIsNone(error)
         self.assertEqual(parada['estado'], 'geolocalizando')
+        self.assertEqual(parada['metodo_captura'], 'camara')
         resultado, error = repartidor.completar_alta_parada(
             self.paradas, parada, self.geocodificador
         )
@@ -611,6 +687,29 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             app.abrir_google_maps()
         self.assertIn('geolocalizándose', app.lbl_estado.text)
         navegador.assert_not_called()
+
+    def test_geocodificacion_desde_camara_abre_maps_individual(self):
+        app = self._app()
+        app.lista_paradas = [{
+            'address': 'Calle Mayor 42, 28001 Madrid',
+            'nombre': 'Calle Mayor 42',
+            'metodo_captura': 'camara',
+            'estado': 'geolocalizando',
+            'prioridad': 'media',
+        }]
+        with patch.object(app, '_abrir_maps_ubicacion_individual') as abrir:
+            app._aplicar_geocodificacion(
+                {
+                    'address': 'Calle Mayor 42, 28001 Madrid, España',
+                    'nombre': 'Calle Mayor 42',
+                    'lat': 40.4168,
+                    'lng': -3.7038,
+                },
+                '',
+                app.lista_paradas[0],
+                'cámara',
+            )
+        abrir.assert_called_once_with(40.4168, -3.7038, 'Calle Mayor 42')
 
 
 class InicioUbicacionTests(unittest.TestCase):

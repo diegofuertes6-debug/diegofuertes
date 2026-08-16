@@ -5,6 +5,7 @@ never requires pyjnius or python-for-android outside an APK.
 """
 
 import os
+import webbrowser
 
 
 LOCATION_PERMISSIONS = (
@@ -100,6 +101,54 @@ def open_location_settings(on_error):
         return True
     except Exception as exc:
         on_error(f'No se pudieron abrir los ajustes de ubicación: {exc}')
+        return False
+
+
+def abrir_google_maps(lat, lng, nombre=None, es_ruta=False, url_web=None):
+    """Abre Google Maps nativo en Android o hace fallback a la web."""
+    if not is_android():
+        if url_web:
+            webbrowser.open(url_web)
+            return True
+        return False
+
+    try:
+        from android import mActivity
+        from jnius import autoclass
+
+        Intent = autoclass('android.content.Intent')
+        Uri = autoclass('android.net.Uri')
+
+        if es_ruta and url_web:
+            target_uri = url_web
+        else:
+            etiqueta = str(nombre or '').strip()
+            query = f'{lat},{lng}'
+            if etiqueta:
+                target_uri = f'geo:{query}?q={query}({etiqueta})'
+            else:
+                target_uri = f'geo:{query}'
+
+        intent = Intent(Intent.ACTION_VIEW, Uri.parse(target_uri))
+        if hasattr(intent, 'setPackage'):
+            intent.setPackage('com.google.android.apps.maps')
+
+        package_manager = mActivity.getPackageManager()
+        if intent.resolveActivity(package_manager) is None and url_web:
+            intent = Intent(Intent.ACTION_VIEW, Uri.parse(url_web))
+
+        if intent.resolveActivity(package_manager) is None:
+            if url_web:
+                webbrowser.open(url_web)
+                return True
+            return False
+
+        mActivity.startActivity(intent)
+        return True
+    except Exception:
+        if url_web:
+            webbrowser.open(url_web)
+            return True
         return False
 
 
