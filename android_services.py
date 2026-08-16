@@ -127,7 +127,7 @@ def abrir_google_maps(lat, lng, nombre=None, es_ruta=False, url_web=None):
             if etiqueta:
                 target_uri = f'geo:{query}?q={query}({etiqueta})'
             else:
-                target_uri = f'google.navigation:q={query}'
+                target_uri = f'geo:{query}'
 
         intent = Intent(Intent.ACTION_VIEW, Uri.parse(target_uri))
         if hasattr(intent, 'setPackage'):
@@ -136,8 +136,6 @@ def abrir_google_maps(lat, lng, nombre=None, es_ruta=False, url_web=None):
         package_manager = mActivity.getPackageManager()
         if intent.resolveActivity(package_manager) is None and url_web:
             intent = Intent(Intent.ACTION_VIEW, Uri.parse(url_web))
-            if hasattr(intent, 'setPackage'):
-                intent.setPackage('com.google.android.apps.maps')
 
         if intent.resolveActivity(package_manager) is None:
             if url_web:
