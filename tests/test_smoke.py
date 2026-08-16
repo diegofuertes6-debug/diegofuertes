@@ -476,17 +476,15 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app.lista_widget = None
         return app
 
-    def test_camara_propone_ocr_para_confirmar_y_limpia_temporal(self):
+    def test_camara_ocr_inicia_geocodificacion_y_limpia_temporal(self):
         app = self._app()
         with tempfile.TemporaryDirectory() as tmp:
             foto = Path(tmp) / 'scan.jpg'
             foto.write_bytes(b'image')
-            app._mostrar_confirmacion = MagicMock()
+            app._ejecutar_en_segundo_plano = MagicMock()
             app._procesar_texto_ocr('Calle Alcalá 10\n28014 Madrid', str(foto))
-            app._mostrar_confirmacion.assert_called_once()
-            candidatos, origen = app._mostrar_confirmacion.call_args.args
-            self.assertEqual(origen, 'cámara')
-            self.assertIn('Calle Alcalá 10', candidatos[0])
+            app._ejecutar_en_segundo_plano.assert_called_once()
+            self.assertIn('Geocodificando', app.lbl_estado.text)
             self.assertFalse(foto.exists())
             self.assertFalse(app._camera_en_curso)
 
@@ -511,26 +509,54 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         ),
     )
     @patch('main.android_services.is_android', return_value=False)
-    def test_camara_escritorio_conserva_y_permite_elegir_segundo_candidato(
+    def test_camara_escritorio_inicia_geocodificacion_automatica(
         self, _android, _ocr
     ):
         app = self._app()
         with tempfile.TemporaryDirectory() as tmp:
             foto = Path(tmp) / 'scan.jpg'
             foto.write_bytes(b'image')
-            app._mostrar_confirmacion = MagicMock()
+            app._ejecutar_en_segundo_plano = MagicMock()
             app._procesar_foto(str(foto))
 
-        app._mostrar_confirmacion.assert_called_once()
-        candidatos, origen = app._mostrar_confirmacion.call_args.args
-        self.assertEqual(origen, 'cámara')
-        self.assertEqual(len(candidatos), 2)
-        entrada = types.SimpleNamespace(text=candidatos[0])
-        app._seleccionar_candidato(entrada, candidatos[1])
-        self.assertEqual(entrada.text, candidatos[1])
-        self.assertIn('Avenida de América 24', entrada.text)
+        app._ejecutar_en_segundo_plano.assert_called_once()
+        self.assertIn('Geocodificando', app.lbl_estado.text)
         self.assertFalse(foto.exists())
         self.assertFalse(app._camera_en_curso)
+
+    def test_finalizar_ocr_exito_aniade_parada_y_abre_maps(self):
+        app = self._app()
+        componentes = {
+            'calle_tipo': 'Calle',
+            'calle_nombre': 'Mayor',
+            'numero': '42',
+            'codigo_postal': '28001',
+            'poblacion': 'Madrid',
+            'direccion_completa': 'Calle Mayor 42, 28001 Madrid',
+        }
+        resultado = {'lat': 40.416, 'lng': -3.703, 'address': 'Calle Mayor 42, Madrid'}
+        app._abrir_maps_ubicacion = MagicMock()
+        app._finalizar_ocr(componentes, resultado, '')
+        self.assertEqual(len(app.lista_paradas), 1)
+        self.assertEqual(app.lista_paradas[0]['address'], 'Calle Mayor 42, Madrid')
+        app._abrir_maps_ubicacion.assert_called_once_with(40.416, -3.703)
+        self.assertIn('Maps', app.lbl_estado.text)
+
+    def test_finalizar_ocr_fallo_geocodificacion_muestra_error(self):
+        app = self._app()
+        componentes = {
+            'calle_tipo': '',
+            'calle_nombre': '',
+            'numero': '',
+            'codigo_postal': '',
+            'poblacion': '',
+            'direccion_completa': 'Dirección inexistente XYZ',
+        }
+        app._abrir_maps_ubicacion = MagicMock()
+        app._finalizar_ocr(componentes, None, 'sin resultados')
+        self.assertEqual(len(app.lista_paradas), 0)
+        app._abrir_maps_ubicacion.assert_not_called()
+        self.assertIn('sin resultados', app.lbl_estado.text)
 
     @patch('main.repartidor.dictar_direccion', return_value='Gran Vía 28, Madrid')
     @patch('main.android_services.is_android', return_value=False)
