@@ -13,9 +13,9 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
   - 🔍 Búsqueda manual: escribe la dirección y pulsa la lupa o Enter.
   Los tres canales comparten validación, geocodificación y detección de
   duplicados, y siempre muestran si la parada se añadió o por qué se rechazó.
-- **Prioridades**: asigna prioridad alta / media / baja a cada parada.
-- **Paquetería y notificación**: selectores contextuales que guardan ambas
-  opciones en cada parada nueva.
+- **Prioridades**: asigna alta (roja), media (naranja) o baja (verde).
+- **Paquetería y cartas**: elige paquetería Urgente/Normal y el tipo de carta;
+  los valores antiguos se normalizan al cargarlos en una parada nueva.
 - **Modo de transporte**: a pie / coche / moto.
 - **Optimización de ruta cerrada**: usa la posición actual como depósito y
   genera una ruta que sale y regresa exactamente a esa misma coordenada.
@@ -71,7 +71,7 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 ## Uso de cámara y micrófono
 
 ### Cámara
-- Pulsa el botón **📷 Cámara**.
+- Pulsa el único botón de escáner **📷**.
 - En Android abre la cámara nativa y procesa la foto localmente con ML Kit.
 - Revisa la dirección propuesta. Si hay varios candidatos, selecciónala en la
   lista; también puedes editar el texto antes de pulsar **Añadir parada**.
@@ -80,7 +80,7 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 - El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
 
 ### Micrófono
-- Pulsa el botón **🎙 Micrófono**.
+- Pulsa el único botón de voz **🎙**.
 - En Android lanza el intent `ACTION_RECOGNIZE_SPEECH` del sistema.
 - Revisa o corrige el texto reconocido y pulsa **Añadir parada**.
 - En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.
@@ -89,7 +89,8 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 
 ### Ubicación
 - La app solicita la ubicación al iniciar, con una explicación contextual.
-- Si los servicios están apagados, ofrece abrir el panel de ubicación de
+- El control de ruta solicita la posición si aún no está disponible. Si los
+  servicios están apagados, ofrece abrir el panel de ubicación de
   Android. Al regresar, comprueba el proveedor y reintenta la posición sin
   repetir diálogos en bucle.
 - Android permite conceder ubicación aproximada o precisa; la app usa la
