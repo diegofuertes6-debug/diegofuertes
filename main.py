@@ -691,6 +691,12 @@ class RepartidorApp(App if App is not object else object):
                 f'Parada geolocalizada desde {origen}: {resultado["address"]}'
             )
         self._refrescar_lista()
+        if not error and parada.get('metodo_captura') == 'camara':
+            self._abrir_maps_ubicacion_individual(
+                resultado.get('lat'),
+                resultado.get('lng'),
+                resultado.get('nombre') or resultado.get('address'),
+            )
 
     def _reintentar_geocodificacion(self, parada):
         if parada not in self.lista_paradas:
@@ -740,6 +746,7 @@ class RepartidorApp(App if App is not object else object):
         )
 
         for idx, parada in enumerate(paradas_ord):
+            parada['numero'] = idx + 1
             estado = parada.get('estado', 'pendiente')
             fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
             color = repartidor.PRIORITY_COLORS.get(
@@ -748,9 +755,9 @@ class RepartidorApp(App if App is not object else object):
             )
             lbl = Label(
                 text=(
-                    f"[{parada.get('prioridad','?')}] "
+                    f"[{parada.get('numero', idx + 1):02d}] "
                     f"{parada.get('address','Sin dirección')}\n"
-                    f"Estado: {estado}"
+                    f"Estado: {estado} · Prioridad: {parada.get('prioridad','?')}"
                 ),
                 halign='left',
                 font_size='12sp',
@@ -815,16 +822,41 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     # Abrir Maps
     # ------------------------------------------------------------------
-    def abrir_google_maps(self, *_args):
+    def _abrir_google_maps(self, url_maps, lat=None, lng=None, nombre=None, es_ruta=False):
+        if not isinstance(url_maps, str) or not url_maps.startswith('http'):
+            self._set_estado(url_maps or 'No se pudo generar el enlace de Google Maps.')
+            return False
+        if android_services.is_android():
+            abierto = android_services.abrir_google_maps(
+                lat,
+                lng,
+                nombre=nombre,
+                es_ruta=es_ruta,
+                url_web=url_maps,
+            )
+            if not abierto:
+                self._set_estado('No se pudo abrir Google Maps en este dispositivo.')
+            return bool(abierto)
+        webbrowser.open(url_maps)
+        return True
+
+    def _abrir_maps_ubicacion_individual(self, lat, lng, nombre):
+        url_maps = repartidor.generar_url_ubicacion_individual(lat, lng, nombre=nombre)
+        if self._abrir_google_maps(url_maps, lat=lat, lng=lng, nombre=nombre):
+            self._set_estado(f'Google Maps abierto para {nombre or "la parada capturada"}.')
+            return True
+        return False
+
+    def _abrir_maps_ruta_completa(self):
         if not self.lista_paradas:
             self._set_estado('Añade al menos una dirección antes de crear la ruta.')
-            return
+            return False
         if android_services.is_android() and not android_services.is_location_enabled():
             self._set_estado(
                 'La ubicación del dispositivo está desactivada. Actívala en '
                 'Ajustes, pulsa "Ubicación" y vuelve a abrir la ruta.'
             )
-            return
+            return False
         if not repartidor.coordenadas_validas(
             (self._ubicacion_actual or {}).get('lat'),
             (self._ubicacion_actual or {}).get('lng'),
@@ -833,7 +865,7 @@ class RepartidorApp(App if App is not object else object):
                 'No hay una posición actual válida para el depósito. Activa la '
                 'ubicación y pulsa "Ubicación" antes de optimizar.'
             )
-            return
+            return False
         pendientes = [
             parada for parada in self.lista_paradas
             if parada.get('estado') == 'geolocalizando'
@@ -853,9 +885,16 @@ class RepartidorApp(App if App is not object else object):
                     'elimina las que muestran error.'
                 )
             self._set_estado(mensaje)
-            return
+            return False
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
+        resumen = repartidor.resumir_ruta(
+            self.lista_paradas,
+            modo=modo,
+            hora_actual=_hora_actual(),
+            origen_lat=loc.get('lat'),
+            origen_lng=loc.get('lng'),
+        )
         url = repartidor.generar_ruta_maps(
             self.lista_paradas,
             modo=modo,
@@ -863,10 +902,25 @@ class RepartidorApp(App if App is not object else object):
             origen_lat=loc.get('lat'),
             origen_lng=loc.get('lng'),
         )
-        if url.startswith('http'):
-            webbrowser.open(url)
-        else:
-            self._set_estado(url)
+        if not self._abrir_google_maps(
+            url,
+            lat=loc.get('lat'),
+            lng=loc.get('lng'),
+            nombre='Ruta repartidor',
+            es_ruta=True,
+        ):
+            return False
+        if resumen:
+            self._set_estado(
+                'Google Maps abierto con '
+                f'{len(resumen["paradas"])} paradas, '
+                f'{resumen["distancia_total_km"]:.2f} km y '
+                f'{resumen["tiempo_total_min"]} min aprox.'
+            )
+        return True
+
+    def abrir_google_maps(self, *_args):
+        self._abrir_maps_ruta_completa()
 
     # ------------------------------------------------------------------
     # Helpers
