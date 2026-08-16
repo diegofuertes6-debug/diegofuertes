@@ -150,10 +150,10 @@ class ModoTransporteTests(unittest.TestCase):
 
 
 class PrioridadColorTests(unittest.TestCase):
-    def test_mapeo_centralizado_rojo_amarillo_verde(self):
+    def test_mapeo_centralizado_rojo_naranja_verde(self):
         self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'baja'))
         self.assertEqual(repartidor.PRIORITY_COLORS['alta'], (1.0, 0.0, 0.0, 1.0))
-        self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 1.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 0.5, 0.0, 1.0))
         self.assertEqual(repartidor.PRIORITY_COLORS['baja'], (0.0, 1.0, 0.0, 1.0))
 
 
@@ -280,6 +280,49 @@ class AndroidServicesTests(unittest.TestCase):
         finally:
             android_services._camera_callback = None
 
+    @patch('android_services.is_android', return_value=True)
+    def test_maps_se_abre_mediante_action_view(self, _mock):
+        created = []
+
+        class FakeIntent:
+            ACTION_VIEW = 'android.intent.action.VIEW'
+
+            def __init__(self, action, data):
+                self.action = action
+                self.data = data
+                self.package = None
+                created.append(self)
+
+            def setPackage(self, package):
+                self.package = package
+
+            def resolveActivity(self, _manager):
+                return object()
+
+        java_activity = MagicMock()
+        java_activity.getPackageManager.return_value = object()
+        android_module = types.ModuleType('android')
+        android_module.mActivity = java_activity
+        jnius_module = types.ModuleType('jnius')
+        jnius_module.autoclass = lambda name: {
+            'android.content.Intent': FakeIntent,
+            'android.net.Uri': types.SimpleNamespace(parse=lambda url: url),
+        }[name]
+        errores = []
+        url = 'https://www.google.com/maps/dir/?api=1&origin=40,-3'
+
+        with patch.dict(
+            sys.modules, {'android': android_module, 'jnius': jnius_module}
+        ):
+            abierto = android_services.open_map_url(url, errores.append)
+
+        self.assertTrue(abierto)
+        self.assertEqual(errores, [])
+        self.assertEqual(created[0].action, FakeIntent.ACTION_VIEW)
+        self.assertEqual(created[0].data, url)
+        self.assertEqual(created[0].package, 'com.google.android.apps.maps')
+        java_activity.startActivity.assert_called_once_with(created[0])
+
     def test_permisos_denegados_incluye_respuestas_ausentes(self):
         permisos = ['coarse', 'fine', 'camera']
         self.assertEqual(
@@ -397,16 +440,16 @@ class AnadirParadaComunTests(unittest.TestCase):
             '  Calle   Mayor 15, 28013 Madrid  ',
             geocodificador=self.geocodificador,
             prioridad='alta',
-            paqueteria='Correos',
-            notificacion='SMS',
+            paqueteria='Urgente',
+            notificacion='Carta certificada',
         )
         self.assertIsNone(error)
         self.assertIs(parada, self.paradas[0])
         self.geocodificador.assert_called_once_with('Calle Mayor 15, 28013 Madrid')
         self.assertEqual(parada['prioridad'], 'alta')
         self.assertEqual(parada['estado'], 'pendiente')
-        self.assertEqual(parada['paqueteria'], 'Correos')
-        self.assertEqual(parada['notificacion'], 'SMS')
+        self.assertEqual(parada['paqueteria'], 'Urgente')
+        self.assertEqual(parada['notificacion'], 'Certificada')
 
     def test_rechaza_vacia_o_invalida_sin_geocodificar(self):
         for texto in ('', '   ', '1234'):
@@ -578,6 +621,26 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         )
         self.assertEqual(app.txt_busqueda.text, '')
 
+    def test_exactamente_tres_acciones_unicas_y_accesibles(self):
+        self.assertEqual(len(main.STOP_ACTIONS), 3)
+        self.assertEqual(
+            [accion[0] for accion in main.STOP_ACTIONS],
+            ['texto', 'voz', 'escaner'],
+        )
+        self.assertEqual(
+            [accion[1] for accion in main.STOP_ACTIONS],
+            ['🔍', '🎙', '📷'],
+        )
+        self.assertEqual(
+            [accion[2] for accion in main.STOP_ACTIONS],
+            ['Texto', 'Voz', 'Escáner'],
+        )
+        self.assertEqual(
+            {accion[4] for accion in main.STOP_ACTIONS},
+            {'buscar_manual', 'dictar_microfono', 'escanear_camara'},
+        )
+        self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
+
     @patch('main.repartidor.buscar_direccion_texto')
     def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
         geocode.side_effect = lambda texto: {
@@ -628,15 +691,115 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             'address': 'Calle Pendiente 1',
             'estado': 'geolocalizando',
         }]
+        app._mostrar_dialogo_activar_ubicacion = MagicMock()
         with patch('main.android_services.is_location_enabled', return_value=False):
             app.abrir_google_maps()
-        self.assertIn('desactivada', app.lbl_estado.text)
+        app._mostrar_dialogo_activar_ubicacion.assert_called_once_with()
+        self.assertTrue(app._open_map_when_located)
 
         app._ubicacion_actual = {'lat': 40.4, 'lng': -3.7}
         with patch('main.android_services.is_location_enabled', return_value=True):
             app.abrir_google_maps()
         self.assertIn('geolocalizándose', app.lbl_estado.text)
         navegador.assert_not_called()
+
+    @patch('main.webbrowser.open')
+    @patch('main.android_services.open_map_url')
+    @patch('main.android_services.is_location_enabled', return_value=True)
+    @patch('main.android_services.is_android', return_value=True)
+    def test_android_abre_ruta_gps_cerrada_en_app_maps(
+        self, _android, _enabled, abrir_maps, navegador
+    ):
+        app = self._app()
+        app.spinner_modo = types.SimpleNamespace(text='Moto')
+        app._ubicacion_actual = {'lat': 40.4, 'lng': -3.7}
+        app.lista_paradas = [{
+            'address': 'Calle Mayor 1',
+            'lat': 40.5,
+            'lng': -3.8,
+            'estado': 'geolocalizada',
+            'prioridad': 'media',
+        }]
+
+        app.abrir_google_maps()
+
+        abrir_maps.assert_called_once()
+        url = abrir_maps.call_args.args[0]
+        self.assertIn('origin=40.4,-3.7', url)
+        self.assertIn('destination=40.4,-3.7', url)
+        self.assertIn('waypoints=40.5,-3.8', url)
+        navegador.assert_not_called()
+
+    @patch('main.android_services.is_location_enabled', return_value=True)
+    @patch('main.android_services.is_android', return_value=True)
+    def test_maps_solicita_gps_si_aun_no_hay_origen(self, _android, _enabled):
+        app = self._app()
+        app.lista_paradas = [{
+            'address': 'Calle Mayor 1',
+            'lat': 40.5,
+            'lng': -3.8,
+            'estado': 'geolocalizada',
+        }]
+        app.solicitar_ubicacion = MagicMock()
+
+        app.abrir_google_maps()
+
+        app.solicitar_ubicacion.assert_called_once_with()
+        self.assertIn('GPS actual', app.lbl_estado.text)
+        self.assertTrue(app._open_map_when_located)
+
+    def test_maps_se_abre_automaticamente_al_recibir_gps_pendiente(self):
+        app = self._app()
+        app._open_map_when_located = True
+        app.abrir_google_maps = MagicMock()
+
+        app._on_ubicacion({'lat': 40.4, 'lng': -3.7})
+
+        self.assertFalse(app._open_map_when_located)
+        app.abrir_google_maps.assert_called_once_with()
+
+
+class SelectoresEntregaTests(unittest.TestCase):
+    def test_paqueteria_muestra_solo_urgente_y_normal(self):
+        self.assertEqual(repartidor.PACKAGE_OPTIONS, ('Urgente', 'Normal'))
+        self.assertEqual(repartidor.DEFAULT_PACKAGE, 'Normal')
+
+    def test_selector_y_opciones_de_cartas_no_muestran_notificaciones(self):
+        self.assertEqual(main._SELECT_CARTAS, 'Cartas')
+        self.assertEqual(
+            repartidor.LETTER_OPTIONS,
+            ('Sin cartas', 'Ordinaria', 'Certificada'),
+        )
+        self.assertNotIn('notificación', ' '.join(repartidor.LETTER_OPTIONS).lower())
+
+    def test_normaliza_valores_legacy_persistidos(self):
+        parada = {
+            'address': 'Calle Mayor 1',
+            'paqueteria': 'Correos',
+            'notificacion': 'SMS',
+        }
+        repartidor.normalizar_metadatos_parada(parada)
+        self.assertEqual(parada['paqueteria'], 'Normal')
+        self.assertEqual(parada['notificacion'], 'Sin cartas')
+        self.assertEqual(repartidor.normalizar_paqueteria('Express 24h'), 'Urgente')
+        self.assertEqual(
+            repartidor.normalizar_cartas('Carta certificada'), 'Certificada'
+        )
+
+    def test_callbacks_guardan_paqueteria_y_cartas_canonicas(self):
+        app = main.RepartidorApp()
+        app.lbl_estado = types.SimpleNamespace(text='')
+        paquete = types.SimpleNamespace(text='')
+        cartas = types.SimpleNamespace(text='')
+
+        app._on_paqueteria_cambio(paquete, 'Express 24h')
+        app._on_notificacion_cambio(cartas, 'Carta ordinaria')
+
+        self.assertEqual(app._paqueteria, 'Urgente')
+        self.assertEqual(paquete.text, 'Urgente')
+        self.assertEqual(app._notificacion, 'Ordinaria')
+        self.assertEqual(cartas.text, 'Cartas')
+        self.assertIn('Cartas: Ordinaria', app.lbl_estado.text)
 
 
 class InicioUbicacionTests(unittest.TestCase):
