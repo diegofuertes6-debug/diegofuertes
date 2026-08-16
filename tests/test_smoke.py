@@ -95,8 +95,8 @@ class EliminarParadaTests(unittest.TestCase):
 class ModoTransporteTests(unittest.TestCase):
     def _paradas_con_coords(self):
         return [
-            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'media'},
-            {'address': 'B', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'media'},
+            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'media', 'estado': 'pendiente'},
+            {'address': 'B', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'media', 'estado': 'pendiente'},
         ]
 
     def test_cambio_modo_recalcula_ruta(self):
@@ -112,6 +112,7 @@ class ModoTransporteTests(unittest.TestCase):
         self.assertIn('travelmode=driving', url_moto)
         self.assertIn('travelmode=walking', url_pie)
         self.assertIn('origin=39.9,-2.9', url_moto)
+        self.assertIn('destination=39.9,-2.9', url_moto)
 
     def test_generar_ruta_sin_paradas(self):
         self.assertEqual(repartidor.generar_ruta_maps([], modo='moto'), 'No hay paradas')
@@ -138,11 +139,62 @@ class ModoTransporteTests(unittest.TestCase):
 
 
 class PrioridadColorTests(unittest.TestCase):
-    def test_mapeo_centralizado_rojo_amarillo_verde(self):
+    def test_mapeo_centralizado_rojo_naranja_verde(self):
         self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'baja'))
         self.assertEqual(repartidor.PRIORITY_COLORS['alta'], (1.0, 0.0, 0.0, 1.0))
-        self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 1.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 0.6, 0.0, 1.0))
         self.assertEqual(repartidor.PRIORITY_COLORS['baja'], (0.0, 1.0, 0.0, 1.0))
+
+
+class ParadasV2Tests(unittest.TestCase):
+    def test_completar_datos_parada_aplica_defaults_v2(self):
+        parada = repartidor.completar_datos_parada({'address': 'Calle A', 'lat': 1.0, 'lng': 2.0})
+        self.assertEqual(parada['paqueteria'], 'Otra')
+        self.assertEqual(parada['ubicacion_vehiculo'], 'En medio')
+        self.assertEqual(parada['tamaño_paquete'], 'Mediano')
+        self.assertEqual(parada['tipo_operacion'], 'Entrega')
+        self.assertEqual(parada['metodo_captura'], 'manual')
+
+    def test_priorizar_mantiene_realizadas_en_historial(self):
+        paradas = [
+            {'address': 'Pendiente', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'media', 'estado': 'pendiente'},
+            {'address': 'Realizada', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta', 'estado': 'realizada'},
+        ]
+        ordenadas = repartidor.priorizar_paradas(paradas, hora_actual=19, origen_lat=39.9, origen_lng=-2.9)
+        self.assertEqual(ordenadas[0]['address'], 'Pendiente')
+        self.assertEqual(ordenadas[-1]['estado'], 'realizada')
+
+    def test_generar_ruta_ignora_realizadas_y_resumen_muestra_tiempo(self):
+        paradas = [
+            {
+                'address': 'A',
+                'lat': 40.0,
+                'lng': -3.0,
+                'prioridad': 'media',
+                'estado': 'pendiente',
+                'paqueteria': 'Amazon',
+                'ubicacion_vehiculo': 'Delante',
+                'tamaño_paquete': 'Pequeño',
+                'tipo_operacion': 'Entrega',
+            },
+            {
+                'address': 'B',
+                'lat': 40.2,
+                'lng': -3.2,
+                'prioridad': 'alta',
+                'estado': 'realizada',
+                'paqueteria': 'Adidas',
+                'ubicacion_vehiculo': 'Atrás',
+                'tamaño_paquete': 'Grande',
+                'tipo_operacion': 'Recogida',
+            },
+        ]
+        url = repartidor.generar_ruta_maps(paradas, origen_lat=39.9, origen_lng=-2.9)
+        resumen = repartidor.generar_resumen_ruta(paradas, origen_lat=39.9, origen_lng=-2.9)
+        self.assertIn('waypoints=40.0,-3.0', url)
+        self.assertNotIn('40.2,-3.2', url)
+        self.assertIn('min estimados', resumen)
+        self.assertIn('Amazon', resumen)
 
 
 class AndroidManifestHookTests(unittest.TestCase):
@@ -427,6 +479,30 @@ class LegacyCompatTests(unittest.TestCase):
         ]
         ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
         self.assertEqual(ordenadas[0]['prioridad'], 'alta')
+
+
+class MainAppV2Tests(unittest.TestCase):
+    @patch('repartidor.buscar_direccion_texto')
+    def test_geocodificar_y_añadir_guarda_metadatos_de_paquete(self, mock_buscar):
+        mock_buscar.return_value = {'address': 'Madrid', 'lat': 40.4, 'lng': -3.7}
+        app = main.RepartidorApp()
+        app._paqueteria = 'Amazon'
+        app._ubicacion_paquete = 'Delante'
+        app._tamaño_paquete = 'Pequeño'
+        app._tipo_operacion = 'Recogida'
+        app._notificacion = 'SMS'
+        app._refrescar_lista = lambda: None
+
+        app._geocodificar_y_añadir('Madrid', metodo_captura='cámara')
+
+        self.assertEqual(len(app.lista_paradas), 1)
+        parada = app.lista_paradas[0]
+        self.assertEqual(parada['paqueteria'], 'Amazon')
+        self.assertEqual(parada['ubicacion_vehiculo'], 'Delante')
+        self.assertEqual(parada['tamaño_paquete'], 'Pequeño')
+        self.assertEqual(parada['tipo_operacion'], 'Recogida')
+        self.assertEqual(parada['notificacion'], 'SMS')
+        self.assertEqual(parada['metodo_captura'], 'cámara')
 
 
 if __name__ == '__main__':

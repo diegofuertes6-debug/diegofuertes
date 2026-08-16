@@ -10,6 +10,7 @@ except ImportError:  # pragma: no cover
 try:
     from kivy.app import App
     from kivy.clock import Clock
+    from kivy.graphics import Color, Ellipse
     from kivy.uix.boxlayout import BoxLayout
     from kivy.uix.button import Button
     from kivy.uix.label import Label
@@ -21,6 +22,8 @@ try:
 except ImportError:  # pragma: no cover
     App = object
     Clock = None
+    Color = None
+    Ellipse = None
     BoxLayout = object
     Button = object
     Label = object
@@ -39,6 +42,27 @@ _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_PAQUETERIA = 'Seleccionar paquetería'
 _SELECT_NOTIFICACION = 'Seleccionar notificación'
+
+
+class NumeroParada(Label if Label is not object else object):
+    def __init__(self, **kwargs):
+        kwargs.setdefault('markup', True)
+        kwargs.setdefault('color', (1, 1, 1, 1))
+        kwargs.setdefault('size_hint', (None, None))
+        kwargs.setdefault('width', '34dp')
+        kwargs.setdefault('height', '34dp')
+        super().__init__(**kwargs)
+        self._ellipse = None
+        if Color is not None and Ellipse is not None and hasattr(self, 'canvas'):
+            with self.canvas.before:
+                Color(0.1, 0.45, 0.95, 1)
+                self._ellipse = Ellipse(pos=self.pos, size=self.size)
+            self.bind(pos=self._actualizar_elipse, size=self._actualizar_elipse)
+
+    def _actualizar_elipse(self, *_args):
+        if self._ellipse is not None:
+            self._ellipse.pos = self.pos
+            self._ellipse.size = self.size
 
 
 def _project_dir():
@@ -67,10 +91,17 @@ class RepartidorApp(App if App is not object else object):
         self.spinner_prioridad = None
         self.spinner_paqueteria = None
         self.spinner_notificacion = None
+        self.spinner_ubicacion = None
+        self.spinner_tamaño = None
+        self.spinner_operacion = None
         self.txt_busqueda = None
         self._ubicacion_actual = None
-        self._paqueteria = None
-        self._notificacion = None
+        self._ubicacion_inicio = None
+        self._paqueteria = repartidor.DEFAULT_STOP_VALUES['paqueteria']
+        self._notificacion = repartidor.DEFAULT_STOP_VALUES['notificacion']
+        self._ubicacion_paquete = repartidor.DEFAULT_STOP_VALUES['ubicacion_vehiculo']
+        self._tamaño_paquete = repartidor.DEFAULT_STOP_VALUES['tamaño_paquete']
+        self._tipo_operacion = repartidor.DEFAULT_STOP_VALUES['tipo_operacion']
         self._clock_19 = None
 
     # ------------------------------------------------------------------
@@ -99,11 +130,11 @@ class RepartidorApp(App if App is not object else object):
 
         # ---- Estado / info ----
         self.lbl_estado = Label(
-            text='App Repartidor\nElige cómo introducir una dirección.',
+            text='App Repartidor 2.0\nElige cómo introducir una dirección.',
             halign='center',
             font_size='15sp',
             size_hint_y=None,
-            height='60dp',
+            height='72dp',
         )
         root.add_widget(self.lbl_estado)
 
@@ -174,17 +205,47 @@ class RepartidorApp(App if App is not object else object):
         fila_selectores = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
         self.spinner_paqueteria = Spinner(
             text=_SELECT_PAQUETERIA,
-            values=['Correos', 'SEUR', 'MRW', 'DHL', 'Otra'],
+            values=list(repartidor.PAQUETERIAS),
         )
         self.spinner_paqueteria.bind(text=self._on_paqueteria_cambio)
         self.spinner_notificacion = Spinner(
             text=_SELECT_NOTIFICACION,
-            values=['Sin notificación', 'SMS', 'Correo', 'Llamada'],
+            values=list(repartidor.NOTIFICACIONES),
         )
         self.spinner_notificacion.bind(text=self._on_notificacion_cambio)
         fila_selectores.add_widget(self.spinner_paqueteria)
         fila_selectores.add_widget(self.spinner_notificacion)
         root.add_widget(fila_selectores)
+
+        fila_paquete = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
+        self.spinner_ubicacion = Spinner(
+            text=self._ubicacion_paquete,
+            values=list(repartidor.UBICACIONES_VEHICULO),
+        )
+        self.spinner_ubicacion.bind(text=self._on_ubicacion_paquete_cambio)
+        self.spinner_tamaño = Spinner(
+            text=self._tamaño_paquete,
+            values=list(repartidor.TAMANOS_PAQUETE),
+        )
+        self.spinner_tamaño.bind(text=self._on_tamaño_paquete_cambio)
+        self.spinner_operacion = Spinner(
+            text=self._tipo_operacion,
+            values=list(repartidor.TIPOS_OPERACION),
+        )
+        self.spinner_operacion.bind(text=self._on_tipo_operacion_cambio)
+        fila_paquete.add_widget(self.spinner_ubicacion)
+        fila_paquete.add_widget(self.spinner_tamaño)
+        fila_paquete.add_widget(self.spinner_operacion)
+        root.add_widget(fila_paquete)
+
+        btn_paquete = Button(
+            text='📦 Datos del paquete',
+            size_hint_y=None,
+            height='42dp',
+            background_color=(0.15, 0.55, 0.75, 1),
+        )
+        btn_paquete.bind(on_press=self.mostrar_popup_paquete)
+        root.add_widget(btn_paquete)
 
         # ---- Lista de paradas ----
         scroll = ScrollView(size_hint=(1, 1))
@@ -199,7 +260,7 @@ class RepartidorApp(App if App is not object else object):
 
         # ---- Botón Ver Ruta ----
         self.btn_ruta = Button(
-            text='🗺 VER RUTA EN MAPS',
+            text='🗺 Optimizar Ruta',
             size_hint_y=None,
             height='56dp',
             disabled=True,
@@ -208,8 +269,11 @@ class RepartidorApp(App if App is not object else object):
         self.btn_ruta.bind(on_press=self.abrir_google_maps)
         root.add_widget(self.btn_ruta)
 
-        # No se solicitan permisos al arrancar; cada función los pide al usarse.
         self._programar_reloj_19()
+        if Clock:
+            Clock.schedule_once(self.solicitar_ubicacion, 0)
+        else:
+            self.solicitar_ubicacion()
 
         return root
 
@@ -263,6 +327,8 @@ class RepartidorApp(App if App is not object else object):
             )
             return
         self._ubicacion_actual = loc
+        if self._ubicacion_inicio is None:
+            self._ubicacion_inicio = dict(loc)
         self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
         self._refrescar_lista()
 
@@ -336,9 +402,9 @@ class RepartidorApp(App if App is not object else object):
 
     def _usar_direccion_ocr(self, direccion, cp):
         if direccion and cp:
-            self._geocodificar_y_añadir(f'{direccion}, {cp}')
+            self._geocodificar_y_añadir(f'{direccion}, {cp}', metodo_captura='cámara')
         elif direccion:
-            self._geocodificar_y_añadir(direccion)
+            self._geocodificar_y_añadir(direccion, metodo_captura='cámara')
         else:
             self._set_estado('No se detectó dirección en la imagen.')
 
@@ -358,7 +424,7 @@ class RepartidorApp(App if App is not object else object):
         self._set_estado('Escuchando micrófono…')
         texto = repartidor.dictar_direccion()
         if texto:
-            self._geocodificar_y_añadir(texto)
+            self._geocodificar_y_añadir(texto, metodo_captura='micrófono')
         else:
             self._set_estado(
                 'No se captó voz.\n'
@@ -373,7 +439,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Di ahora la dirección completa…')
         android_services.start_speech_recognition(
-            self._geocodificar_y_añadir,
+            lambda texto: self._geocodificar_y_añadir(texto, metodo_captura='micrófono'),
             self._set_estado,
         )
 
@@ -383,14 +449,14 @@ class RepartidorApp(App if App is not object else object):
         if not texto:
             self._set_estado('Escribe una dirección primero.')
             return
-        self._geocodificar_y_añadir(texto)
+        self._geocodificar_y_añadir(texto, metodo_captura='manual')
         if self.txt_busqueda:
             self.txt_busqueda.text = ''
 
     # ------------------------------------------------------------------
     # Geocodificación y gestión de paradas
     # ------------------------------------------------------------------
-    def _geocodificar_y_añadir(self, texto):
+    def _geocodificar_y_añadir(self, texto, metodo_captura='manual'):
         self._set_estado(f'Buscando: {texto}…')
         parada = repartidor.buscar_direccion_texto(texto)
         if parada is None:
@@ -400,9 +466,16 @@ class RepartidorApp(App if App is not object else object):
             )
             return
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        parada = repartidor.completar_datos_parada(
+            parada,
+            paqueteria=self._paqueteria,
+            ubicacion_vehiculo=self._ubicacion_paquete,
+            tamaño_paquete=self._tamaño_paquete,
+            tipo_operacion=self._tipo_operacion,
+            notificacion=self._notificacion,
+            metodo_captura=metodo_captura,
+        )
         repartidor.asignar_prioridad(parada, prioridad)
-        parada['paqueteria'] = self._paqueteria
-        parada['notificacion'] = self._notificacion
         self.lista_paradas.append(parada)
         self._set_estado(f'Parada añadida: {parada.get("address", texto)}')
         self._refrescar_lista()
@@ -425,33 +498,70 @@ class RepartidorApp(App if App is not object else object):
         )
 
         for idx, parada in enumerate(paradas_ord):
-            fila = BoxLayout(size_hint_y=None, height='44dp', spacing=4)
+            fila = BoxLayout(size_hint_y=None, height='82dp', spacing=6)
             color = repartidor.PRIORITY_COLORS.get(
                 parada.get('prioridad', 'media'),
                 repartidor.PRIORITY_COLORS['media'],
             )
+            badge = NumeroParada(text=str(idx + 1))
+            estado_realizada = parada.get('estado') == 'realizada'
+            estado_texto = (
+                '[color=33aa33]✓ Realizada[/color]'
+                if estado_realizada else
+                '[color=ff8800]Pendiente[/color]'
+            )
+            detalle = (
+                f"{parada.get('paqueteria', 'Otra')} · "
+                f"{parada.get('ubicacion_vehiculo', '')} · "
+                f"{parada.get('tamaño_paquete', '')} · "
+                f"{parada.get('tipo_operacion', '')}"
+            )
             lbl = Label(
-                text=f"[{parada.get('prioridad','?')}] {parada.get('address','Sin dirección')}",
+                text=(
+                    f"[b]Prioridad {parada.get('prioridad','?')}[/b] "
+                    f"{parada.get('address','Sin dirección')}\n"
+                    f"{detalle}\n{estado_texto}"
+                ),
                 halign='left',
                 font_size='12sp',
-                size_hint_x=0.8,
+                markup=True,
+                valign='middle',
+                size_hint_x=0.62,
                 text_size=(None, None),
                 color=color,
             )
-            btn_del = Button(
-                text='✕',
-                size_hint_x=0.2,
+            btn_estado = Button(
+                text='↺ Pendiente' if estado_realizada else '✓ Realizada',
+                size_hint_y=0.6,
                 background_normal='',
-                background_color=color,
+                background_color=(0.3, 0.7, 0.35, 1) if not estado_realizada else (0.45, 0.45, 0.45, 1),
+            )
+            btn_borrar = Button(
+                text='✕ Borrar',
+                size_hint_y=0.4,
+                background_normal='',
+                background_color=(0.8, 0.2, 0.2, 1),
             )
             real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
-            btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
+            btn_estado.bind(on_press=lambda _btn, i=real_idx: self._cambiar_estado_parada(i))
+            btn_borrar.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
+            acciones = BoxLayout(orientation='vertical', size_hint_x=0.28, spacing=4)
+            acciones.add_widget(btn_estado)
+            acciones.add_widget(btn_borrar)
+            fila.add_widget(badge)
             fila.add_widget(lbl)
-            fila.add_widget(btn_del)
+            fila.add_widget(acciones)
             self.lista_widget.add_widget(fila)
 
         if self.btn_ruta is not None:
             self.btn_ruta.disabled = not bool(self.lista_paradas)
+
+    def _cambiar_estado_parada(self, indice):
+        if not (0 <= indice < len(self.lista_paradas)):
+            return
+        parada = self.lista_paradas[indice]
+        parada['estado'] = 'pendiente' if parada.get('estado') == 'realizada' else 'realizada'
+        self._refrescar_lista()
 
     def _eliminar_parada(self, indice):
         repartidor.eliminar_parada(self.lista_paradas, indice)
@@ -471,15 +581,76 @@ class RepartidorApp(App if App is not object else object):
         if valor == _SELECT_PAQUETERIA:
             return
         self._paqueteria = valor
-        spinner.text = _SELECT_PAQUETERIA
         self._set_estado(f'Paquetería seleccionada: {valor}')
 
     def _on_notificacion_cambio(self, spinner, valor):
         if valor == _SELECT_NOTIFICACION:
             return
         self._notificacion = valor
-        spinner.text = _SELECT_NOTIFICACION
         self._set_estado(f'Notificación seleccionada: {valor}')
+
+    def _on_ubicacion_paquete_cambio(self, _spinner, valor):
+        self._ubicacion_paquete = valor
+
+    def _on_tamaño_paquete_cambio(self, _spinner, valor):
+        self._tamaño_paquete = valor
+
+    def _on_tipo_operacion_cambio(self, _spinner, valor):
+        self._tipo_operacion = valor
+
+    def mostrar_popup_paquete(self, *_args):
+        if Popup is object or GridLayout is object:
+            return
+        contenido = GridLayout(cols=1, spacing=6, padding=8)
+        campos = {
+            'paqueteria': Spinner(text=self._paqueteria, values=list(repartidor.PAQUETERIAS)),
+            'ubicacion_vehiculo': Spinner(text=self._ubicacion_paquete, values=list(repartidor.UBICACIONES_VEHICULO)),
+            'tamaño_paquete': Spinner(text=self._tamaño_paquete, values=list(repartidor.TAMANOS_PAQUETE)),
+            'tipo_operacion': Spinner(text=self._tipo_operacion, values=list(repartidor.TIPOS_OPERACION)),
+            'notificacion': Spinner(text=self._notificacion, values=list(repartidor.NOTIFICACIONES)),
+        }
+        contenido.bind(minimum_height=contenido.setter('height'))
+        for titulo, control in (
+            ('Paquetería', campos['paqueteria']),
+            ('Ubicación en vehículo', campos['ubicacion_vehiculo']),
+            ('Tamaño del paquete', campos['tamaño_paquete']),
+            ('Tipo de operación', campos['tipo_operacion']),
+            ('Notificación', campos['notificacion']),
+        ):
+            contenido.add_widget(Label(text=titulo, size_hint_y=None, height='28dp'))
+            control.size_hint_y = None
+            control.height = '40dp'
+            contenido.add_widget(control)
+
+        fila_botones = BoxLayout(size_hint_y=None, height='42dp', spacing=6)
+        popup = Popup(title='Información adicional del paquete', content=contenido, size_hint=(0.9, 0.8))
+        btn_guardar = Button(text='Guardar', background_color=(0.2, 0.7, 0.3, 1))
+        btn_cancelar = Button(text='Cancelar', background_color=(0.7, 0.2, 0.2, 1))
+        btn_guardar.bind(on_press=lambda *_: self._guardar_popup_paquete(popup, campos))
+        btn_cancelar.bind(on_press=popup.dismiss)
+        fila_botones.add_widget(btn_guardar)
+        fila_botones.add_widget(btn_cancelar)
+        contenido.add_widget(fila_botones)
+        popup.open()
+
+    def _guardar_popup_paquete(self, popup, campos):
+        self._paqueteria = campos['paqueteria'].text
+        self._ubicacion_paquete = campos['ubicacion_vehiculo'].text
+        self._tamaño_paquete = campos['tamaño_paquete'].text
+        self._tipo_operacion = campos['tipo_operacion'].text
+        self._notificacion = campos['notificacion'].text
+        if self.spinner_paqueteria is not None:
+            self.spinner_paqueteria.text = self._paqueteria
+        if self.spinner_ubicacion is not None:
+            self.spinner_ubicacion.text = self._ubicacion_paquete
+        if self.spinner_tamaño is not None:
+            self.spinner_tamaño.text = self._tamaño_paquete
+        if self.spinner_operacion is not None:
+            self.spinner_operacion.text = self._tipo_operacion
+        if self.spinner_notificacion is not None:
+            self.spinner_notificacion.text = self._notificacion
+        self._set_estado('Datos del paquete guardados.')
+        popup.dismiss()
 
     # ------------------------------------------------------------------
     # Abrir Maps
@@ -495,7 +666,14 @@ class RepartidorApp(App if App is not object else object):
             )
             return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
-        loc = self._ubicacion_actual or {}
+        loc = self._ubicacion_inicio or self._ubicacion_actual or {}
+        resumen = repartidor.generar_resumen_ruta(
+            self.lista_paradas,
+            modo=modo,
+            hora_actual=_hora_actual(),
+            origen_lat=loc.get('lat'),
+            origen_lng=loc.get('lng'),
+        )
         url = repartidor.generar_ruta_maps(
             self.lista_paradas,
             modo=modo,
@@ -504,6 +682,7 @@ class RepartidorApp(App if App is not object else object):
             origen_lng=loc.get('lng'),
         )
         if url.startswith('http'):
+            self._set_estado(resumen)
             webbrowser.open(url)
         else:
             self._set_estado(url)
