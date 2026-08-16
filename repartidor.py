@@ -34,9 +34,13 @@ API_KEY_CANDIDATES = (
 PRIORITY_ORDER = ('alta', 'media', 'baja')
 PRIORITY_COLORS = {
     'alta': (1.0, 0.0, 0.0, 1.0),
-    'media': (1.0, 1.0, 0.0, 1.0),
+    'media': (1.0, 0.5, 0.0, 1.0),
     'baja': (0.0, 1.0, 0.0, 1.0),
 }
+PACKAGE_OPTIONS = ('Urgente', 'Normal')
+DEFAULT_PACKAGE = 'Normal'
+LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
+DEFAULT_LETTER = 'Sin cartas'
 
 try:
     from dotenv import load_dotenv
@@ -302,6 +306,35 @@ def asignar_prioridad(parada, prioridad):
     return parada
 
 
+def normalizar_paqueteria(valor):
+    """Normalize current and legacy package values to the two supported options."""
+    texto = normalizar_direccion(valor).casefold()
+    if texto == 'urgente' or any(
+        marca in texto for marca in ('express', '24 h', '24h', 'prioritari')
+    ):
+        return 'Urgente'
+    return DEFAULT_PACKAGE
+
+
+def normalizar_cartas(valor):
+    """Normalize legacy notification values without changing the persisted key."""
+    texto = normalizar_direccion(valor).casefold()
+    if texto in {'ordinaria', 'carta ordinaria'}:
+        return 'Ordinaria'
+    if texto in {'certificada', 'carta certificada'}:
+        return 'Certificada'
+    return DEFAULT_LETTER
+
+
+def normalizar_metadatos_parada(parada):
+    """Migrate persisted stop metadata to the current visible choices in place."""
+    if not isinstance(parada, dict):
+        return parada
+    parada['paqueteria'] = normalizar_paqueteria(parada.get('paqueteria'))
+    parada['notificacion'] = normalizar_cartas(parada.get('notificacion'))
+    return parada
+
+
 def _clave_direccion(texto):
     texto = normalizar_direccion(texto).casefold()
     return re.sub(r'[^\w]+', '', texto, flags=re.UNICODE)
@@ -350,8 +383,8 @@ def validar_y_anadir_parada(
     parada['address'] = direccion_resuelta
     parada['estado'] = parada.get('estado') or 'pendiente'
     asignar_prioridad(parada, prioridad)
-    parada['paqueteria'] = paqueteria
-    parada['notificacion'] = notificacion
+    parada['paqueteria'] = normalizar_paqueteria(paqueteria)
+    parada['notificacion'] = normalizar_cartas(notificacion)
     paradas.append(parada)
     return parada, None
 
@@ -382,8 +415,8 @@ def iniciar_alta_parada(
         'address': direccion,
         'estado': 'geolocalizando',
         'origen': origen,
-        'paqueteria': paqueteria,
-        'notificacion': notificacion,
+        'paqueteria': normalizar_paqueteria(paqueteria),
+        'notificacion': normalizar_cartas(notificacion),
     }
     asignar_prioridad(parada, prioridad)
     paradas.append(parada)
@@ -736,7 +769,9 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if hora_actual is None:
         hora_actual = datetime.now().hour
 
-    paradas_validas = [p for p in paradas if isinstance(p, dict)]
+    paradas_validas = [
+        normalizar_metadatos_parada(p) for p in paradas if isinstance(p, dict)
+    ]
 
     if hora_actual >= 19:
         # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
@@ -779,7 +814,7 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if not coordenadas_validas(origen_lat, origen_lng):
         return (
             'No hay una ubicación de origen válida. Activa la ubicación del '
-            'dispositivo, pulsa "Ubicación" y vuelve a intentarlo.'
+            'dispositivo y vuelve a abrir la ruta.'
         )
 
     paradas_invalidas = [
