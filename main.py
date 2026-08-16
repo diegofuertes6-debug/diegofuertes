@@ -342,11 +342,8 @@ class RepartidorApp(App if App is not object else object):
                 lambda error: self._error_captura(error, filepath),
             )
             return
-        direccion, cp = repartidor.procesar_imagen(filepath)
-        self._usar_direccion_ocr(direccion, cp)
-        self._eliminar_temporal(filepath)
-        self._temp_scan_path = None
-        self._camera_en_curso = False
+        texto = repartidor.leer_texto_imagen(filepath)
+        self._procesar_texto_ocr(texto, filepath)
 
     def _procesar_texto_ocr(self, texto, filepath):
         try:
@@ -459,7 +456,11 @@ class RepartidorApp(App if App is not object else object):
                 size_hint_y=None,
                 height='48dp',
             )
-            selector.bind(text=lambda _spinner, valor: setattr(entrada, 'text', valor))
+            selector.bind(
+                text=lambda _spinner, valor: self._seleccionar_candidato(
+                    entrada, valor
+                )
+            )
             contenido.add_widget(selector)
         contenido.add_widget(entrada)
         feedback = Label(
@@ -498,6 +499,10 @@ class RepartidorApp(App if App is not object else object):
         )
         popup.open()
         self._set_estado(f'Confirma o edita la dirección detectada por {origen}.')
+
+    @staticmethod
+    def _seleccionar_candidato(entrada, valor):
+        entrada.text = valor
 
     def _cerrar_confirmacion(self, popup):
         popup.dismiss()

@@ -130,23 +130,27 @@ def take_photo(filename='foto_direccion.jpg', quality=0.8):
 
 
 def procesar_imagen(path):
+    texto = leer_texto_imagen(path)
+    return extraer_direccion_texto_ocr(texto)
+
+
+def leer_texto_imagen(path):
+    """Extract all OCR text from an image on desktop."""
     target_path = _resolve_path(path)
     if not os.path.isfile(target_path):
         print(f'No existe la imagen: {target_path}')
-        return '', ''
+        return ''
 
     if pytesseract is None or Image is None:
         print('pytesseract/Pillow no están disponibles para procesar la imagen.')
-        return '', ''
+        return ''
 
     try:
         with Image.open(target_path) as image:
-            texto = pytesseract.image_to_string(image, lang='eng+spa')
+            return str(pytesseract.image_to_string(image, lang='eng+spa') or '')
     except (OSError, ValueError) as exc:
         print(f'No se pudo procesar la imagen: {exc}')
-        return '', ''
-
-    return extraer_direccion_texto_ocr(texto)
+        return ''
 
 
 def extraer_direccion_texto_ocr(texto):
