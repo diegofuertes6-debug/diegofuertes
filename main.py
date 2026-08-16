@@ -72,6 +72,9 @@ class RepartidorApp(App if App is not object else object):
         self._paqueteria = None
         self._notificacion = None
         self._clock_19 = None
+        self._popup_confirmacion = None
+        self._temp_scan_path = None
+        self._camera_en_curso = False
 
     # ------------------------------------------------------------------
     # Legacy API key loader (compatible con el JSON existente)
@@ -108,21 +111,24 @@ class RepartidorApp(App if App is not object else object):
         root.add_widget(self.lbl_estado)
 
         # ---- Botones entrada de parada ----
-        fila_entrada = BoxLayout(size_hint_y=None, height='50dp', spacing=6)
+        fila_entrada = BoxLayout(size_hint_y=None, height='56dp', spacing=6)
         btn_camara = Button(
             text='📷 Cámara',
+            font_size='12sp',
             background_color=(0.1, 0.6, 0.9, 1),
         )
         btn_camara.bind(on_press=self.escanear_camara)
 
         btn_micro = Button(
             text='🎙 Micrófono',
+            font_size='12sp',
             background_color=(0.2, 0.7, 0.3, 1),
         )
         btn_micro.bind(on_press=self.dictar_microfono)
 
         btn_ubicacion = Button(
             text='⌖ Ubicación',
+            font_size='12sp',
             background_color=(0.5, 0.3, 0.8, 1),
         )
         btn_ubicacion.bind(on_press=self.solicitar_ubicacion)
@@ -133,18 +139,22 @@ class RepartidorApp(App if App is not object else object):
         root.add_widget(fila_entrada)
 
         # ---- Búsqueda manual ----
-        fila_buscar = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
+        fila_buscar = BoxLayout(size_hint_y=None, height='52dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
             multiline=False,
-            size_hint_x=0.75,
+            size_hint_x=1,
+            padding=(10, 13),
         )
         btn_buscar = Button(
             text='🔍 Buscar',
-            size_hint_x=0.25,
+            size_hint_x=None,
+            width='104dp',
+            font_size='13sp',
             background_color=(0.8, 0.5, 0.1, 1),
         )
         btn_buscar.bind(on_press=self.buscar_manual)
+        self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
         fila_buscar.add_widget(self.txt_busqueda)
         fila_buscar.add_widget(btn_buscar)
         root.add_widget(fila_buscar)
@@ -284,7 +294,7 @@ class RepartidorApp(App if App is not object else object):
     # Entrada de paradas
     # ------------------------------------------------------------------
     def escanear_camara(self, *_args):
-        """Toma una foto, extrae la dirección con OCR y añade la parada."""
+        """Take a photo and propose its OCR address for confirmation."""
         if android_services.is_android():
             self._set_estado('Solicitando acceso a la cámara…')
             android_services.request_runtime_permissions(
@@ -303,19 +313,26 @@ class RepartidorApp(App if App is not object else object):
         self._abrir_camara()
 
     def _abrir_camara(self):
+        if self._camera_en_curso:
+            self._set_estado('Ya hay una captura de cámara en curso.')
+            return
         self._set_estado('Abriendo cámara…')
         filepath = os.path.join(self.user_data_dir, 'temp_scan.jpg')
+        self._temp_scan_path = filepath
+        self._camera_en_curso = True
         self._eliminar_temporal(filepath)
         android_services.capture_photo(
             filepath,
             self._procesar_foto,
-            self._set_estado,
+            lambda error: self._error_captura(error, filepath),
         )
 
     def _procesar_foto(self, filepath):
         filepath = filepath or os.path.join(self.user_data_dir, 'temp_scan.jpg')
         if not os.path.isfile(filepath):
+            self._camera_en_curso = False
             self._set_estado('No se capturó ninguna imagen.')
+            self._temp_scan_path = None
             return
         self._set_estado('Procesando imagen…')
         if android_services.is_android():
@@ -328,22 +345,36 @@ class RepartidorApp(App if App is not object else object):
         direccion, cp = repartidor.procesar_imagen(filepath)
         self._usar_direccion_ocr(direccion, cp)
         self._eliminar_temporal(filepath)
+        self._temp_scan_path = None
+        self._camera_en_curso = False
 
     def _procesar_texto_ocr(self, texto, filepath):
-        direccion, cp = repartidor.extraer_direccion_texto_ocr(texto)
-        self._usar_direccion_ocr(direccion, cp)
-        self._eliminar_temporal(filepath)
+        try:
+            candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
+            if candidatos:
+                self._mostrar_confirmacion(candidatos, 'cámara')
+            else:
+                self._set_estado('No se detectó una dirección válida en la imagen.')
+        finally:
+            self._eliminar_temporal(filepath)
+            self._temp_scan_path = None
+            self._camera_en_curso = False
 
     def _usar_direccion_ocr(self, direccion, cp):
+        candidatos = []
         if direccion and cp:
-            self._geocodificar_y_añadir(f'{direccion}, {cp}')
+            candidatos.append(f'{direccion}, {cp}')
         elif direccion:
-            self._geocodificar_y_añadir(direccion)
+            candidatos.append(direccion)
+        if candidatos:
+            self._mostrar_confirmacion(candidatos, 'cámara')
         else:
-            self._set_estado('No se detectó dirección en la imagen.')
+            self._set_estado('No se detectó una dirección válida en la imagen.')
 
     def _error_captura(self, error, filepath):
         self._eliminar_temporal(filepath)
+        self._temp_scan_path = None
+        self._camera_en_curso = False
         self._set_estado(error)
 
     def dictar_microfono(self, *_args):
@@ -358,7 +389,7 @@ class RepartidorApp(App if App is not object else object):
         self._set_estado('Escuchando micrófono…')
         texto = repartidor.dictar_direccion()
         if texto:
-            self._geocodificar_y_añadir(texto)
+            self._mostrar_confirmacion([texto], 'micrófono')
         else:
             self._set_estado(
                 'No se captó voz.\n'
@@ -373,7 +404,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Di ahora la dirección completa…')
         android_services.start_speech_recognition(
-            self._geocodificar_y_añadir,
+            lambda texto: self._mostrar_confirmacion([texto], 'micrófono'),
             self._set_estado,
         )
 
@@ -383,29 +414,135 @@ class RepartidorApp(App if App is not object else object):
         if not texto:
             self._set_estado('Escribe una dirección primero.')
             return
-        self._geocodificar_y_añadir(texto)
-        if self.txt_busqueda:
+        if self._validar_y_anadir(texto, 'búsqueda') and self.txt_busqueda:
             self.txt_busqueda.text = ''
 
     # ------------------------------------------------------------------
     # Geocodificación y gestión de paradas
     # ------------------------------------------------------------------
-    def _geocodificar_y_añadir(self, texto):
-        self._set_estado(f'Buscando: {texto}…')
-        parada = repartidor.buscar_direccion_texto(texto)
-        if parada is None:
+    def _mostrar_confirmacion(self, candidatos, origen):
+        candidatos = [
+            repartidor.normalizar_direccion(candidato)
+            for candidato in candidatos
+            if repartidor.normalizar_direccion(candidato)
+        ]
+        if not candidatos:
+            self._set_estado(f'No se recibió una dirección válida por {origen}.')
+            return
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = candidatos[0]
+        if Popup is object:
             self._set_estado(
-                'No se obtuvieron coordenadas para esa dirección. Comprueba la '
-                'dirección, la conexión y la API key antes de añadirla.'
+                f'Dirección detectada por {origen}: {candidatos[0]}. '
+                'Revísala en el campo y pulsa Buscar.'
             )
             return
+
+        contenido = BoxLayout(orientation='vertical', padding=12, spacing=10)
+        contenido.add_widget(Label(
+            text=f'Dirección detectada por {origen}.\nRevísala antes de añadirla:',
+            size_hint_y=None,
+            height='54dp',
+            halign='center',
+        ))
+        entrada = TextInput(
+            text=candidatos[0],
+            multiline=False,
+            size_hint_y=None,
+            height='52dp',
+            padding=(10, 13),
+        )
+        if len(candidatos) > 1:
+            selector = Spinner(
+                text=candidatos[0],
+                values=candidatos,
+                size_hint_y=None,
+                height='48dp',
+            )
+            selector.bind(text=lambda _spinner, valor: setattr(entrada, 'text', valor))
+            contenido.add_widget(selector)
+        contenido.add_widget(entrada)
+        feedback = Label(
+            text='',
+            size_hint_y=None,
+            height='44dp',
+            halign='center',
+            color=(1, 0.35, 0.35, 1),
+        )
+        contenido.add_widget(feedback)
+        acciones = BoxLayout(size_hint_y=None, height='52dp', spacing=10)
+        cancelar = Button(text='Cancelar')
+        anadir = Button(text='Añadir parada', background_color=(0.2, 0.7, 0.3, 1))
+        acciones.add_widget(cancelar)
+        acciones.add_widget(anadir)
+        contenido.add_widget(acciones)
+        alto = '374dp' if len(candidatos) > 1 else '314dp'
+        popup = Popup(
+            title='Confirmar dirección',
+            content=contenido,
+            size_hint=(0.92, None),
+            height=alto,
+            auto_dismiss=False,
+        )
+        self._popup_confirmacion = popup
+        cancelar.bind(on_press=lambda *_args: self._cerrar_confirmacion(popup))
+        anadir.bind(
+            on_press=lambda *_args: self._confirmar_propuesta(
+                popup, entrada, origen, feedback
+            )
+        )
+        entrada.bind(
+            on_text_validate=lambda *_args: self._confirmar_propuesta(
+                popup, entrada, origen, feedback
+            )
+        )
+        popup.open()
+        self._set_estado(f'Confirma o edita la dirección detectada por {origen}.')
+
+    def _cerrar_confirmacion(self, popup):
+        popup.dismiss()
+        if self._popup_confirmacion is popup:
+            self._popup_confirmacion = None
+        self._set_estado('Adición cancelada. Puedes escribir otra dirección.')
+
+    def _confirmar_propuesta(self, popup, entrada, origen, feedback):
+        texto = repartidor.normalizar_direccion(entrada.text)
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = texto
+        if not self._validar_y_anadir(texto, origen):
+            feedback.text = self.lbl_estado.text if self.lbl_estado is not None else (
+                'No se pudo añadir la dirección.'
+            )
+            return
+        popup.dismiss()
+        if self._popup_confirmacion is popup:
+            self._popup_confirmacion = None
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = ''
+
+    def _validar_y_anadir(self, texto, origen):
+        self._set_estado(f'Buscando: {texto}…')
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
-        repartidor.asignar_prioridad(parada, prioridad)
-        parada['paqueteria'] = self._paqueteria
-        parada['notificacion'] = self._notificacion
-        self.lista_paradas.append(parada)
-        self._set_estado(f'Parada añadida: {parada.get("address", texto)}')
+        parada, error = repartidor.validar_y_anadir_parada(
+            self.lista_paradas,
+            texto,
+            geocodificador=repartidor.buscar_direccion_texto,
+            prioridad=prioridad,
+            paqueteria=self._paqueteria,
+            notificacion=self._notificacion,
+        )
+        if error:
+            self._set_estado(error)
+            return False
+        self._set_estado(
+            f'Parada añadida desde {origen}: {parada.get("address", texto)}'
+        )
         self._refrescar_lista()
+        return True
+
+    def _geocodificar_y_añadir(self, texto):
+        """Compatibility wrapper for callers using the former shared path."""
+        return self._validar_y_anadir(texto, 'entrada')
 
     def _refrescar_lista(self):
         if self.lista_widget is None:
@@ -522,6 +659,19 @@ class RepartidorApp(App if App is not object else object):
                 os.remove(filepath)
         except OSError:
             pass
+
+    def on_stop(self):
+        if self._clock_19 is not None:
+            self._clock_19.cancel()
+            self._clock_19 = None
+        if self._popup_confirmacion is not None:
+            self._popup_confirmacion.dismiss()
+            self._popup_confirmacion = None
+        if self._temp_scan_path:
+            self._eliminar_temporal(self._temp_scan_path)
+            self._temp_scan_path = None
+        self._camera_en_curso = False
+        android_services.cancel_pending_activities()
 
 
 if __name__ == '__main__':

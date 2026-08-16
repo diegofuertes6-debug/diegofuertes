@@ -151,27 +151,69 @@ def procesar_imagen(path):
 
 def extraer_direccion_texto_ocr(texto):
     """Extract a likely Spanish street address and postal code from OCR text."""
-    texto = re.sub(r'\s+', ' ', texto or '').strip()
-    if not texto:
+    candidatos = extraer_candidatos_direccion_ocr(texto)
+    if not candidatos:
         return '', ''
-    print('\n--- Texto detectado ---')
-    print(texto)
-
-    cp_match = re.search(r'\b\d{5}\b', texto)
+    direccion = candidatos[0]
+    cp_match = re.search(r'\b\d{5}\b', direccion)
     cp_final = cp_match.group() if cp_match else ''
+    if cp_final:
+        direccion = re.sub(rf'(?:,\s*)?\b{re.escape(cp_final)}\b.*$', '', direccion).strip(' ,')
+    return direccion, cp_final
 
-    patrones = [
-        r'\b(?:Calle|Calleja|C/|C\.\/|Avda|Avenida|Avinguda|Plaza|Paseo|Carrera|Camino|Ronda|Via)\b[^\n]{0,80}',
-        r'\b(?:Calle|C/|Avda|Avenida|Plaza|Paseo)\b[^\n]{0,80}',
-    ]
-    direccion_final = ''
-    for patron in patrones:
-        match = re.search(patron, texto, re.IGNORECASE)
-        if match:
-            direccion_final = re.sub(r'\s+', ' ', match.group()).strip()
-            break
 
-    return direccion_final, cp_final
+def normalizar_direccion(texto):
+    """Normalize user-provided address text without changing its meaning."""
+    texto = re.sub(r'[\r\n\t]+', ' ', str(texto or ''))
+    texto = re.sub(r'\s+', ' ', texto).strip(' ,;')
+    return texto
+
+
+def extraer_candidatos_direccion_ocr(texto):
+    """Return plausible address lines ordered by confidence, without OCR noise."""
+    texto = str(texto or '').replace('\r', '\n')
+    if not texto.strip():
+        return []
+
+    prefijo = re.compile(
+        r'\b(?:Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
+        r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
+        re.IGNORECASE,
+    )
+    codigo_postal = re.compile(r'\b\d{5}\b')
+    lineas = [normalizar_direccion(linea) for linea in texto.split('\n')]
+    candidatos = []
+    for indice, linea in enumerate(lineas):
+        coincidencia = prefijo.search(linea) if linea else None
+        if coincidencia is None:
+            continue
+        candidato = linea[coincidencia.start():]
+        for siguiente in lineas[indice + 1:indice + 3]:
+            if not siguiente:
+                continue
+            es_numero_portal = bool(
+                re.fullmatch(r'\d{1,4}[A-Za-z]?(?:[-/]\d{1,4})?', siguiente)
+            )
+            if es_numero_portal or (
+                codigo_postal.search(siguiente) and len(siguiente) <= 60
+            ):
+                candidato = f'{candidato}, {siguiente}'
+            if codigo_postal.search(siguiente):
+                break
+        candidato = normalizar_direccion(candidato)
+        if len(candidato) >= 6 and candidato.casefold() not in {
+            existente.casefold() for existente in candidatos
+        }:
+            candidatos.append(candidato)
+
+    return sorted(
+        candidatos,
+        key=lambda candidato: (
+            not bool(re.search(r'\d', candidato)),
+            not bool(codigo_postal.search(candidato)),
+            len(candidato),
+        ),
+    )
 
 
 def cargar_api_key():
@@ -254,6 +296,60 @@ def asignar_prioridad(parada, prioridad):
         prioridad_valida = 'media'
     parada['prioridad'] = prioridad_valida
     return parada
+
+
+def _clave_direccion(texto):
+    texto = normalizar_direccion(texto).casefold()
+    return re.sub(r'[^\w]+', '', texto, flags=re.UNICODE)
+
+
+def validar_y_anadir_parada(
+    paradas,
+    texto,
+    geocodificador=None,
+    prioridad='media',
+    paqueteria=None,
+    notificacion=None,
+):
+    """Validate, geocode and append a stop through one consistent operation.
+
+    Returns ``(parada, error)``. Exactly one value is non-``None``.
+    """
+    if not isinstance(paradas, list):
+        return None, 'No se pudo acceder al listado de paradas.'
+
+    direccion = normalizar_direccion(texto)
+    if len(direccion) < 5 or not re.search(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]', direccion):
+        return None, 'Introduce una dirección válida antes de añadirla.'
+
+    clave_entrada = _clave_direccion(direccion)
+    for existente in paradas:
+        if isinstance(existente, dict) and _clave_direccion(existente.get('address')) == clave_entrada:
+            return None, 'Esa dirección ya está en el listado.'
+
+    geocodificador = geocodificador or buscar_direccion_texto
+    parada = geocodificador(direccion)
+    if not isinstance(parada, dict) or not coordenadas_validas(
+        parada.get('lat'), parada.get('lng')
+    ):
+        return None, (
+            'No se obtuvieron coordenadas para esa dirección. Comprueba la '
+            'dirección, la conexión y la API key.'
+        )
+
+    direccion_resuelta = normalizar_direccion(parada.get('address') or direccion)
+    clave_resuelta = _clave_direccion(direccion_resuelta)
+    for existente in paradas:
+        if isinstance(existente, dict) and _clave_direccion(existente.get('address')) == clave_resuelta:
+            return None, 'Esa dirección ya está en el listado.'
+
+    parada['address'] = direccion_resuelta
+    parada['estado'] = parada.get('estado') or 'pendiente'
+    asignar_prioridad(parada, prioridad)
+    parada['paqueteria'] = paqueteria
+    parada['notificacion'] = notificacion
+    paradas.append(parada)
+    return parada, None
 
 
 def _haversine(lat1, lng1, lat2, lng2):

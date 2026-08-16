@@ -28,6 +28,14 @@ else
   HOST_PYTHON=python3
 fi
 
+# python-for-android invokes `python3` internally. Keep it on the same supported
+# interpreter instead of an incompatible newer user installation.
+PYTHON_SHIM_DIR="/tmp/repartidor-python-shim"
+rm -rf "$PYTHON_SHIM_DIR"
+mkdir -p "$PYTHON_SHIM_DIR"
+ln -s "$(command -v "$HOST_PYTHON")" "$PYTHON_SHIM_DIR/python3"
+export PATH="$PYTHON_SHIM_DIR:$PATH"
+
 echo "Iniciando buildozer (android debug) en $LINUX_WORKDIR con $HOST_PYTHON..."
 if ! "$HOST_PYTHON" - <<'PY' >/dev/null 2>&1
 import importlib.util
