@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import webbrowser
 
 try:
@@ -75,6 +76,14 @@ class RepartidorApp(App if App is not object else object):
         self._popup_confirmacion = None
         self._temp_scan_path = None
         self._camera_en_curso = False
+        self._location_permission_requested = False
+        self._location_permission_denied = False
+        self._location_request_in_progress = False
+        self._location_request_generation = 0
+        self._location_cancel = None
+        self._waiting_location_settings = False
+        self._location_dialog_shown = False
+        self._resume_location_after_pause = False
 
     # ------------------------------------------------------------------
     # Legacy API key loader (compatible con el JSON existente)
@@ -218,19 +227,45 @@ class RepartidorApp(App if App is not object else object):
         self.btn_ruta.bind(on_press=self.abrir_google_maps)
         root.add_widget(self.btn_ruta)
 
-        # No se solicitan permisos al arrancar; cada función los pide al usarse.
         self._programar_reloj_19()
+        if Clock:
+            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.5)
+        else:
+            self._solicitar_ubicacion_inicial()
 
         return root
 
     # ------------------------------------------------------------------
     # Geolocalización
     # ------------------------------------------------------------------
-    def solicitar_ubicacion(self, *_args):
+    def _solicitar_ubicacion_inicial(self, *_args):
+        self.solicitar_ubicacion(contexto_inicial=True)
+
+    def solicitar_ubicacion(self, *_args, contexto_inicial=False):
+        if self._location_request_in_progress:
+            self._set_estado('Ya se está obteniendo la ubicación actual…')
+            return
+        if _args and not contexto_inicial:
+            self._location_dialog_shown = False
         self._set_estado('Solicitando acceso a la ubicación…')
         if not android_services.is_android():
             self._actualizar_ubicacion_escritorio()
             return
+        if android_services.location_permission_granted():
+            self._location_permission_denied = False
+            self._comprobar_proveedor_y_localizar(prompt_settings=True)
+            return
+        if self._location_permission_denied or self._location_permission_requested:
+            self._set_estado(
+                'La ubicación no tiene permiso. Actívalo en Ajustes de la app '
+                'para usar tu posición como depósito.'
+            )
+            return
+        self._location_permission_requested = True
+        self._set_estado(
+            'Necesitamos tu ubicación para usar el punto actual como salida y '
+            'regreso de la ruta. Android mostrará ahora el permiso.'
+        )
         android_services.request_runtime_permissions(
             android_services.LOCATION_PERMISSIONS,
             self._on_permiso_ubicacion,
@@ -238,22 +273,101 @@ class RepartidorApp(App if App is not object else object):
 
     def _on_permiso_ubicacion(self, concedido, denegados):
         if not concedido and not android_services.has_location_permission(denegados):
+            self._location_permission_denied = True
             self._set_estado(
-                'Permiso de ubicación denegado.\n'
-                'Concédelo en Ajustes y pulsa "Ubicación" para poder optimizar.'
+                'Permiso de ubicación denegado. No volveremos a solicitarlo '
+                'automáticamente; puedes activarlo en Ajustes de la app.'
             )
             return
+        self._location_permission_denied = False
+        self._comprobar_proveedor_y_localizar(prompt_settings=True)
+
+    def _comprobar_proveedor_y_localizar(self, prompt_settings):
         if not android_services.is_location_enabled():
-            self._set_estado(
-                'La ubicación del dispositivo está desactivada.\n'
-                'Actívala en Ajustes y vuelve a pulsar "Ubicación".'
-            )
+            self._ubicacion_actual = None
+            self._refrescar_lista()
+            if prompt_settings and not self._location_dialog_shown:
+                self._mostrar_dialogo_activar_ubicacion()
+            else:
+                self._set_estado(
+                    'La ubicación del dispositivo está apagada. Actívala en '
+                    'Ajustes; al volver reintentaremos obtener tu posición.'
+                )
             return
-        self._set_estado('Obteniendo ubicación actual…')
-        android_services.get_current_location(
-            self._on_ubicacion,
-            self._set_estado,
+        self._location_dialog_shown = False
+        self._iniciar_localizacion()
+
+    def _mostrar_dialogo_activar_ubicacion(self):
+        self._location_dialog_shown = True
+        mensaje = (
+            'La ubicación del dispositivo está apagada. Debes activarla para '
+            'usar tu posición actual como inicio y final de la ruta.'
         )
+        self._set_estado(mensaje)
+        if Popup is object:
+            self._abrir_ajustes_ubicacion()
+            return
+        contenido = BoxLayout(orientation='vertical', padding=12, spacing=10)
+        contenido.add_widget(Label(text=mensaje, halign='center'))
+        acciones = BoxLayout(size_hint_y=None, height='52dp', spacing=10)
+        cancelar = Button(text='Ahora no')
+        abrir = Button(text='Abrir ajustes', background_color=(0.2, 0.7, 0.3, 1))
+        acciones.add_widget(cancelar)
+        acciones.add_widget(abrir)
+        contenido.add_widget(acciones)
+        popup = Popup(
+            title='Activar ubicación',
+            content=contenido,
+            size_hint=(0.92, None),
+            height='260dp',
+            auto_dismiss=False,
+        )
+        cancelar.bind(on_press=lambda *_args: popup.dismiss())
+        abrir.bind(
+            on_press=lambda *_args: self._confirmar_ajustes_ubicacion(popup)
+        )
+        popup.open()
+
+    def _confirmar_ajustes_ubicacion(self, popup):
+        popup.dismiss()
+        self._abrir_ajustes_ubicacion()
+
+    def _abrir_ajustes_ubicacion(self):
+        self._waiting_location_settings = android_services.open_location_settings(
+            self._set_estado
+        )
+        if self._waiting_location_settings:
+            self._set_estado(
+                'Activa la ubicación en el panel del sistema y vuelve a la app.'
+            )
+
+    def _iniciar_localizacion(self):
+        if self._location_request_in_progress:
+            return
+        self._location_request_generation += 1
+        generation = self._location_request_generation
+        self._location_request_in_progress = True
+        self._set_estado('Obteniendo ubicación actual…')
+        self._location_cancel = android_services.get_current_location(
+            lambda loc: self._on_ubicacion_generacion(generation, loc),
+            lambda error: self._on_error_ubicacion(generation, error),
+        )
+
+    def _on_ubicacion_generacion(self, generation, loc):
+        if generation != self._location_request_generation:
+            return
+        self._location_request_in_progress = False
+        self._location_cancel = None
+        self._on_ubicacion(loc)
+
+    def _on_error_ubicacion(self, generation, error):
+        if generation != self._location_request_generation:
+            return
+        self._location_request_in_progress = False
+        self._location_cancel = None
+        self._ubicacion_actual = None
+        self._set_estado(error)
+        self._refrescar_lista()
 
     def _actualizar_ubicacion_escritorio(self):
         loc = repartidor.obtener_ubicacion_actual()
@@ -273,7 +387,10 @@ class RepartidorApp(App if App is not object else object):
             )
             return
         self._ubicacion_actual = loc
-        self._set_estado(f'Ubicación: {loc["lat"]:.4f}, {loc["lng"]:.4f}')
+        self._set_estado(
+            f'Depósito actual: {loc["lat"]:.5f}, {loc["lng"]:.5f}. '
+            'La ruta saldrá y volverá exactamente aquí.'
+        )
         self._refrescar_lista()
 
     # ------------------------------------------------------------------
@@ -526,12 +643,11 @@ class RepartidorApp(App if App is not object else object):
             self.txt_busqueda.text = ''
 
     def _validar_y_anadir(self, texto, origen):
-        self._set_estado(f'Buscando: {texto}…')
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
-        parada, error = repartidor.validar_y_anadir_parada(
+        parada, error = repartidor.iniciar_alta_parada(
             self.lista_paradas,
             texto,
-            geocodificador=repartidor.buscar_direccion_texto,
+            origen=origen,
             prioridad=prioridad,
             paqueteria=self._paqueteria,
             notificacion=self._notificacion,
@@ -540,10 +656,67 @@ class RepartidorApp(App if App is not object else object):
             self._set_estado(error)
             return False
         self._set_estado(
-            f'Parada añadida desde {origen}: {parada.get("address", texto)}'
+            f'Geolocalizando parada de {origen}: {parada.get("address", texto)}…'
         )
         self._refrescar_lista()
+        self._ejecutar_en_segundo_plano(
+            lambda: self._geocodificar_parada(parada, origen)
+        )
         return True
+
+    def _geocodificar_parada(self, parada, origen):
+        resultado, detalle = repartidor.resolver_geocodificacion(
+            parada.get('address', ''),
+            geocodificador=repartidor.buscar_direccion_texto,
+        )
+        self._dispatch_ui(
+            lambda: self._aplicar_geocodificacion(
+                resultado, detalle, parada, origen
+            )
+        )
+
+    def _aplicar_geocodificacion(self, resultado, detalle, parada, origen):
+        if parada not in self.lista_paradas:
+            return
+        resultado, error = repartidor.aplicar_alta_geocodificada(
+            self.lista_paradas, parada, resultado, detalle
+        )
+        if error:
+            self._set_estado(
+                f'Error al geolocalizar "{parada.get("address", "")}": {error} '
+                'Puedes reintentar o corregirla.'
+            )
+        else:
+            self._set_estado(
+                f'Parada geolocalizada desde {origen}: {resultado["address"]}'
+            )
+        self._refrescar_lista()
+
+    def _reintentar_geocodificacion(self, parada):
+        if parada not in self.lista_paradas:
+            return
+        parada['estado'] = 'geolocalizando'
+        parada.pop('error', None)
+        self._set_estado(f'Reintentando geolocalización: {parada["address"]}…')
+        self._refrescar_lista()
+        self._ejecutar_en_segundo_plano(
+            lambda: self._geocodificar_parada(
+                parada, parada.get('origen', 'reintento')
+            )
+        )
+
+    def _corregir_parada(self, parada):
+        if parada not in self.lista_paradas:
+            return
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = parada.get('address', '')
+            if hasattr(self.txt_busqueda, 'focus'):
+                self.txt_busqueda.focus = True
+        self.lista_paradas.remove(parada)
+        self._set_estado(
+            'Corrige la dirección en el campo y pulsa Buscar para geolocalizarla.'
+        )
+        self._refrescar_lista()
 
     def _geocodificar_y_añadir(self, texto):
         """Compatibility wrapper for callers using the former shared path."""
@@ -567,28 +740,44 @@ class RepartidorApp(App if App is not object else object):
         )
 
         for idx, parada in enumerate(paradas_ord):
-            fila = BoxLayout(size_hint_y=None, height='44dp', spacing=4)
+            estado = parada.get('estado', 'pendiente')
+            fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
             color = repartidor.PRIORITY_COLORS.get(
                 parada.get('prioridad', 'media'),
                 repartidor.PRIORITY_COLORS['media'],
             )
             lbl = Label(
-                text=f"[{parada.get('prioridad','?')}] {parada.get('address','Sin dirección')}",
+                text=(
+                    f"[{parada.get('prioridad','?')}] "
+                    f"{parada.get('address','Sin dirección')}\n"
+                    f"Estado: {estado}"
+                ),
                 halign='left',
                 font_size='12sp',
-                size_hint_x=0.8,
+                size_hint_x=0.65 if estado == 'error' else 0.8,
                 text_size=(None, None),
                 color=color,
             )
             btn_del = Button(
                 text='✕',
-                size_hint_x=0.2,
+                size_hint_x=0.15 if estado == 'error' else 0.2,
                 background_normal='',
                 background_color=color,
             )
             real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
             btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
             fila.add_widget(lbl)
+            if estado == 'error':
+                btn_retry = Button(text='↻', size_hint_x=0.1)
+                btn_edit = Button(text='✎', size_hint_x=0.1)
+                btn_retry.bind(
+                    on_press=lambda _btn, p=parada: self._reintentar_geocodificacion(p)
+                )
+                btn_edit.bind(
+                    on_press=lambda _btn, p=parada: self._corregir_parada(p)
+                )
+                fila.add_widget(btn_retry)
+                fila.add_widget(btn_edit)
             fila.add_widget(btn_del)
             self.lista_widget.add_widget(fila)
 
@@ -636,6 +825,35 @@ class RepartidorApp(App if App is not object else object):
                 'Ajustes, pulsa "Ubicación" y vuelve a abrir la ruta.'
             )
             return
+        if not repartidor.coordenadas_validas(
+            (self._ubicacion_actual or {}).get('lat'),
+            (self._ubicacion_actual or {}).get('lng'),
+        ):
+            self._set_estado(
+                'No hay una posición actual válida para el depósito. Activa la '
+                'ubicación y pulsa "Ubicación" antes de optimizar.'
+            )
+            return
+        pendientes = [
+            parada for parada in self.lista_paradas
+            if parada.get('estado') == 'geolocalizando'
+            or not repartidor.coordenadas_validas(
+                parada.get('lat'), parada.get('lng')
+            )
+        ]
+        if pendientes:
+            estados = {parada.get('estado') for parada in pendientes}
+            if 'geolocalizando' in estados:
+                mensaje = (
+                    'Espera: aún hay paradas geolocalizándose antes de optimizar.'
+                )
+            else:
+                mensaje = (
+                    'Hay paradas sin coordenadas válidas. Reintenta, corrige o '
+                    'elimina las que muestran error.'
+                )
+            self._set_estado(mensaje)
+            return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
         url = repartidor.generar_ruta_maps(
@@ -658,6 +876,17 @@ class RepartidorApp(App if App is not object else object):
             self.lbl_estado.text = str(texto)
 
     @staticmethod
+    def _ejecutar_en_segundo_plano(callback):
+        threading.Thread(target=callback, daemon=True).start()
+
+    @staticmethod
+    def _dispatch_ui(callback):
+        if Clock:
+            Clock.schedule_once(lambda _delta: callback(), 0)
+        else:
+            callback()
+
+    @staticmethod
     def _eliminar_temporal(filepath):
         try:
             if os.path.isfile(filepath):
@@ -677,6 +906,41 @@ class RepartidorApp(App if App is not object else object):
             self._temp_scan_path = None
         self._camera_en_curso = False
         android_services.cancel_pending_activities()
+
+    def on_pause(self):
+        self._resume_location_after_pause = self._location_request_in_progress
+        self._location_request_generation += 1
+        self._location_request_in_progress = False
+        if self._location_cancel is not None:
+            self._location_cancel()
+            self._location_cancel = None
+        else:
+            android_services.cancel_location_request()
+        return True
+
+    def on_resume(self):
+        if not android_services.is_android():
+            return
+        if self._waiting_location_settings:
+            self._waiting_location_settings = False
+            if android_services.is_location_enabled():
+                self._location_dialog_shown = False
+                self._set_estado('Ubicación activada. Obteniendo posición actual…')
+                self._comprobar_proveedor_y_localizar(prompt_settings=False)
+            else:
+                self._set_estado(
+                    'La ubicación sigue apagada. Pulsa "Ubicación" cuando quieras '
+                    'volver a abrir Ajustes.'
+                )
+            self._resume_location_after_pause = False
+        elif self._resume_location_after_pause:
+            self._resume_location_after_pause = False
+            if (
+                android_services.location_permission_granted()
+                and android_services.is_location_enabled()
+            ):
+                self._set_estado('Reanudando la obtención de tu posición actual…')
+                self._iniciar_localizacion()
 
 
 if __name__ == '__main__':

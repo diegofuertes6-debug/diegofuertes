@@ -113,6 +113,18 @@ class ModoTransporteTests(unittest.TestCase):
         self.assertIn('travelmode=walking', url_pie)
         self.assertIn('origin=39.9,-2.9', url_moto)
 
+    def test_ruta_cerrada_usa_deposito_como_origen_y_destino(self):
+        url = repartidor.generar_ruta_maps(
+            self._paradas_con_coords(),
+            modo='moto',
+            hora_actual=10,
+            origen_lat=39.9,
+            origen_lng=-2.9,
+        )
+        self.assertIn('origin=39.9,-2.9', url)
+        self.assertIn('destination=39.9,-2.9', url)
+        self.assertIn('waypoints=40.0,-3.0|41.0,-4.0', url)
+
     def test_generar_ruta_sin_paradas(self):
         self.assertEqual(repartidor.generar_ruta_maps([], modo='moto'), 'No hay paradas')
 
@@ -427,6 +439,33 @@ class AnadirParadaComunTests(unittest.TestCase):
         self.assertIsNone(parada)
         self.assertIn('coordenadas', error)
 
+    def test_alta_asincrona_expone_geolocalizando_exito_y_error(self):
+        parada, error = repartidor.iniciar_alta_parada(
+            self.paradas, 'Calle Mayor 15', origen='cámara', prioridad='alta'
+        )
+        self.assertIsNone(error)
+        self.assertEqual(parada['estado'], 'geolocalizando')
+        resultado, error = repartidor.completar_alta_parada(
+            self.paradas, parada, self.geocodificador
+        )
+        self.assertIsNone(error)
+        self.assertIs(resultado, parada)
+        self.assertEqual(parada['estado'], 'geolocalizada')
+        self.assertEqual(parada['prioridad'], 'alta')
+        self.assertTrue(repartidor.coordenadas_validas(parada['lat'], parada['lng']))
+
+        fallida, error = repartidor.iniciar_alta_parada(
+            self.paradas, 'Calle Inexistente 99', origen='voz'
+        )
+        self.assertIsNone(error)
+        resultado, error = repartidor.completar_alta_parada(
+            self.paradas, fallida, lambda _texto: None
+        )
+        self.assertIsNone(resultado)
+        self.assertIn('coordenadas', error)
+        self.assertEqual(fallida['estado'], 'error')
+        self.assertNotIn('lat', fallida)
+
 
 class FlujosEntradaParadaTests(unittest.TestCase):
     def _app(self):
@@ -512,6 +551,135 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             'Calle Serrano 12', 'búsqueda'
         )
         self.assertEqual(app.txt_busqueda.text, '')
+
+    @patch('main.repartidor.buscar_direccion_texto')
+    def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
+        geocode.side_effect = lambda texto: {
+            'address': texto,
+            'lat': 40.4168,
+            'lng': -3.7038,
+        }
+        app = self._app()
+        app._ejecutar_en_segundo_plano = lambda callback: callback()
+        app._dispatch_ui = lambda callback: callback()
+
+        class PopupFake:
+            def dismiss(self):
+                return None
+
+        for origen, direccion in (
+            ('cámara', 'Calle Cámara 10'),
+            ('micrófono', 'Calle Voz 20'),
+        ):
+            app._confirmar_propuesta(
+                PopupFake(),
+                types.SimpleNamespace(text=direccion),
+                origen,
+                types.SimpleNamespace(text=''),
+            )
+        app.txt_busqueda.text = 'Calle Escrita 30'
+        app.buscar_manual()
+
+        self.assertEqual(geocode.call_count, 3)
+        self.assertEqual(
+            {parada['origen'] for parada in app.lista_paradas},
+            {'cámara', 'micrófono', 'búsqueda'},
+        )
+        self.assertTrue(all(
+            parada['estado'] == 'geolocalizada'
+            and repartidor.coordenadas_validas(parada['lat'], parada['lng'])
+            for parada in app.lista_paradas
+        ))
+
+    @patch('main.webbrowser.open')
+    @patch('main.android_services.is_android', return_value=True)
+    def test_optimizacion_bloquea_gps_y_paradas_sin_coordenadas(
+        self, _android, navegador
+    ):
+        app = self._app()
+        app.spinner_modo = types.SimpleNamespace(text='Moto')
+        app.lista_paradas = [{
+            'address': 'Calle Pendiente 1',
+            'estado': 'geolocalizando',
+        }]
+        with patch('main.android_services.is_location_enabled', return_value=False):
+            app.abrir_google_maps()
+        self.assertIn('desactivada', app.lbl_estado.text)
+
+        app._ubicacion_actual = {'lat': 40.4, 'lng': -3.7}
+        with patch('main.android_services.is_location_enabled', return_value=True):
+            app.abrir_google_maps()
+        self.assertIn('geolocalizándose', app.lbl_estado.text)
+        navegador.assert_not_called()
+
+
+class InicioUbicacionTests(unittest.TestCase):
+    def _app(self):
+        app = main.RepartidorApp()
+        app.lbl_estado = types.SimpleNamespace(text='')
+        app.lista_widget = None
+        return app
+
+    @patch('main.android_services.is_android', return_value=True)
+    @patch('main.android_services.location_permission_granted', return_value=False)
+    def test_denegacion_no_repite_prompt_automaticamente(
+        self, _permission, _android
+    ):
+        app = self._app()
+        with patch(
+            'main.android_services.request_runtime_permissions',
+            side_effect=lambda _perms, callback: callback(
+                False, list(android_services.LOCATION_PERMISSIONS)
+            ),
+        ) as request:
+            app._solicitar_ubicacion_inicial()
+            app._solicitar_ubicacion_inicial()
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(app._location_permission_denied)
+        self.assertIn('ajustes', app.lbl_estado.text.lower())
+
+    @patch('main.android_services.is_android', return_value=True)
+    @patch('main.android_services.is_location_enabled', return_value=True)
+    def test_retorno_desde_ajustes_reintenta_sin_otro_dialogo(
+        self, _enabled, _android
+    ):
+        app = self._app()
+        app._waiting_location_settings = True
+        app._location_dialog_shown = True
+        app._comprobar_proveedor_y_localizar = MagicMock()
+        app.on_resume()
+        self.assertFalse(app._waiting_location_settings)
+        self.assertFalse(app._location_dialog_shown)
+        app._comprobar_proveedor_y_localizar.assert_called_once_with(
+            prompt_settings=False
+        )
+
+    @patch('main.android_services.is_android', return_value=True)
+    @patch('main.android_services.location_permission_granted', return_value=True)
+    @patch('main.android_services.is_location_enabled', return_value=True)
+    def test_resume_reanuda_una_adquisicion_interrumpida(
+        self, _enabled, _permission, _android
+    ):
+        app = self._app()
+        app._resume_location_after_pause = True
+        app._iniciar_localizacion = MagicMock()
+        app.on_resume()
+        app._iniciar_localizacion.assert_called_once_with()
+        self.assertFalse(app._resume_location_after_pause)
+
+    @patch('main.android_services.is_android', return_value=True)
+    @patch('main.android_services.location_permission_granted', return_value=True)
+    @patch('main.android_services.is_location_enabled', return_value=False)
+    def test_proveedor_apagado_muestra_un_solo_prompt_automatico(
+        self, _enabled, _permission, _android
+    ):
+        app = self._app()
+        app._mostrar_dialogo_activar_ubicacion = MagicMock(
+            side_effect=lambda: setattr(app, '_location_dialog_shown', True)
+        )
+        app._solicitar_ubicacion_inicial()
+        app._solicitar_ubicacion_inicial()
+        app._mostrar_dialogo_activar_ubicacion.assert_called_once()
 
 
 class BuscarDireccionTests(unittest.TestCase):

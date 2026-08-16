@@ -20,6 +20,7 @@ CAMERA_REQUEST_CODE = 4108
 _listener_refs = []
 _speech_callback = None
 _camera_callback = None
+_location_cancel = None
 
 
 def is_android():
@@ -47,6 +48,18 @@ def has_location_permission(denied):
     return any(permission not in denied for permission in LOCATION_PERMISSIONS)
 
 
+def location_permission_granted():
+    """Return whether coarse or fine location is currently granted."""
+    if not is_android():
+        return True
+    try:
+        from android.permissions import check_permission
+
+        return any(check_permission(permission) for permission in LOCATION_PERMISSIONS)
+    except (ImportError, AttributeError):
+        return False
+
+
 def is_location_enabled():
     """Return whether Android has at least one usable location provider."""
     if not is_android():
@@ -69,6 +82,24 @@ def is_location_enabled():
             or manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         )
     except Exception:
+        return False
+
+
+def open_location_settings(on_error):
+    """Open Android's location-source panel so the user can enable providers."""
+    if not is_android():
+        on_error('Los ajustes de ubicación solo están disponibles en Android.')
+        return False
+    try:
+        from android import mActivity
+        from jnius import autoclass
+
+        Intent = autoclass('android.content.Intent')
+        Settings = autoclass('android.provider.Settings')
+        mActivity.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+        return True
+    except Exception as exc:
+        on_error(f'No se pudieron abrir los ajustes de ubicación: {exc}')
         return False
 
 
@@ -259,18 +290,20 @@ def recognize_image_text(filename, on_success, on_error):
 
 def get_current_location(on_location, on_error):
     """Request a single GPS fix and stop listening immediately afterward."""
+    global _location_cancel
+
     if is_android() and not is_location_enabled():
         on_error(
             'La ubicación del dispositivo está desactivada. '
             'Actívala en Ajustes y vuelve a intentarlo.'
         )
-        return
+        return None
 
     try:
         from plyer import gps
     except (ImportError, AttributeError):
         on_error('El servicio de ubicación no está disponible en este dispositivo.')
-        return
+        return None
 
     from kivy.clock import Clock
 
@@ -278,6 +311,8 @@ def get_current_location(on_location, on_error):
     timeout_event = {'value': None}
 
     def stop():
+        global _location_cancel
+        completed['value'] = True
         event = timeout_event['value']
         if event is not None:
             event.cancel()
@@ -285,13 +320,19 @@ def get_current_location(on_location, on_error):
             gps.stop()
         except Exception:
             pass
+        if _location_cancel is stop:
+            _location_cancel = None
 
     def timeout(_delta):
         if completed['value']:
             return
         completed['value'] = True
         stop()
-        on_error('No se obtuvo una ubicación. Comprueba que el GPS esté activo.')
+        _dispatch(
+            on_error,
+            'No se obtuvo una ubicación en 15 segundos. Sal a una zona abierta '
+            'y pulsa "Ubicación" para reintentar.',
+        )
 
     def finish_location(**location):
         if completed['value']:
@@ -319,9 +360,19 @@ def get_current_location(on_location, on_error):
         gps.configure(on_location=finish_location, on_status=report_status)
         gps.start(minTime=1000, minDistance=0)
         timeout_event['value'] = Clock.schedule_once(timeout, 15)
+        _location_cancel = stop
+        return stop
     except Exception as exc:
         stop()
         _dispatch(on_error, f'No se pudo iniciar la ubicación: {exc}')
+        return None
+
+
+def cancel_location_request():
+    """Cancel the active one-shot location request, if any."""
+    cancel = _location_cancel
+    if cancel is not None:
+        cancel()
 
 
 def start_speech_recognition(on_success, on_error):
@@ -396,6 +447,7 @@ def cancel_pending_activities():
     finally:
         _camera_callback = None
         _speech_callback = None
+        cancel_location_request()
 
 
 def _dispatch(callback, *args):
