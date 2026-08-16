@@ -17,7 +17,8 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 - **Paquetería y notificación**: selectores contextuales que guardan ambas
   opciones en cada parada nueva.
 - **Modo de transporte**: a pie / coche / moto.
-- **Optimización de ruta**: heurística del vecino más cercano para minimizar la distancia recorrida.
+- **Optimización de ruta cerrada**: usa la posición actual como depósito y
+  genera una ruta que sale y regresa exactamente a esa misma coordenada.
 - **Regla de las 19:00**: a partir de las 19:00 hora local las paradas pendientes se reordenan primero por prioridad (alta > media > baja) y dentro de cada grupo se aplica la optimización de vecino más cercano.
 
 ---
@@ -40,7 +41,9 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 3. La API key debe tener habilitadas las APIs **Geocoding** y **Maps JavaScript**.
 
-> **Nota**: sin API key la app sigue funcionando pero no geocodifica las direcciones; las paradas se guardan solo con el texto introducido.
+> **Nota**: sin API key la app no puede hacer elegible una dirección para la
+> ruta. La parada muestra error de geolocalización y permite corregir o
+> reintentar; nunca se inventan coordenadas.
 
 ---
 
@@ -56,9 +59,10 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 | `CAMERA` | Captura de foto para OCR de dirección |
 | `RECORD_AUDIO` | Reconocimiento de voz (micrófono) |
 
-Los permisos no se solicitan al arrancar. Se piden en contexto al pulsar
-**Ubicación**, **Cámara** o **Micrófono**. Si el usuario los deniega, la app
-muestra un mensaje y mantiene disponible la entrada manual. Las imágenes se
+Al arrancar se explica y solicita el permiso de ubicación porque la posición
+actual es el depósito obligatorio de la ruta. Cámara y micrófono se solicitan
+en contexto al usar cada función. Si el usuario deniega ubicación, la app
+respeta la decisión y no repite automáticamente el prompt. Las imágenes se
 capturan en almacenamiento privado mediante `FileProvider`, se eliminan después
 del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 
@@ -84,9 +88,12 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 - Si el reconocimiento falla, la app muestra un mensaje y puedes usar la búsqueda manual.
 
 ### Ubicación
-- Pulsa **⌖ Ubicación** para solicitar una posición solo cuando la necesites.
+- La app solicita la ubicación al iniciar, con una explicación contextual.
+- Si los servicios están apagados, ofrece abrir el panel de ubicación de
+  Android. Al regresar, comprueba el proveedor y reintenta la posición sin
+  repetir diálogos en bucle.
 - Android permite conceder ubicación aproximada o precisa; la app usa la
-  posición disponible como origen al ordenar y abrir la ruta.
+  posición disponible como origen y destino idénticos al ordenar y abrir la ruta.
 - La optimización se bloquea con un mensaje explicativo si la ubicación está
   desactivada, falta el permiso, el origen no es válido o alguna parada no pudo
   geocodificarse.

@@ -356,6 +356,104 @@ def validar_y_anadir_parada(
     return parada, None
 
 
+def iniciar_alta_parada(
+    paradas,
+    texto,
+    origen='entrada',
+    prioridad='media',
+    paqueteria=None,
+    notificacion=None,
+):
+    """Append one provisional stop that is not routable until geocoding succeeds."""
+    if not isinstance(paradas, list):
+        return None, 'No se pudo acceder al listado de paradas.'
+    direccion = normalizar_direccion(texto)
+    if len(direccion) < 5 or not re.search(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]', direccion):
+        return None, 'Introduce una dirección válida antes de añadirla.'
+    clave = _clave_direccion(direccion)
+    if any(
+        isinstance(parada, dict)
+        and _clave_direccion(parada.get('address')) == clave
+        for parada in paradas
+    ):
+        return None, 'Esa dirección ya está en el listado.'
+
+    parada = {
+        'address': direccion,
+        'estado': 'geolocalizando',
+        'origen': origen,
+        'paqueteria': paqueteria,
+        'notificacion': notificacion,
+    }
+    asignar_prioridad(parada, prioridad)
+    paradas.append(parada)
+    return parada, None
+
+
+def resolver_geocodificacion(texto, geocodificador=None):
+    """Run only the potentially blocking geocoder, without mutating UI state."""
+    geocodificador = geocodificador or buscar_direccion_texto
+    direccion = normalizar_direccion(texto)
+    try:
+        resultado = geocodificador(direccion)
+    except Exception as exc:
+        resultado = None
+        detalle = str(exc).strip()
+    else:
+        detalle = ''
+    return resultado, detalle
+
+
+def aplicar_alta_geocodificada(paradas, parada, resultado, detalle=''):
+    """Apply one geocoder result atomically to a provisional stop."""
+    if not isinstance(parada, dict) or parada not in paradas:
+        return None, 'La parada ya no está disponible.'
+    direccion = normalizar_direccion(parada.get('address'))
+
+    if not isinstance(resultado, dict) or not coordenadas_validas(
+        resultado.get('lat') if isinstance(resultado, dict) else None,
+        resultado.get('lng') if isinstance(resultado, dict) else None,
+    ):
+        parada.pop('lat', None)
+        parada.pop('lng', None)
+        parada['estado'] = 'error'
+        parada['error'] = (
+            'No se obtuvieron coordenadas. Comprueba la dirección, la conexión '
+            'y la API key.'
+        )
+        if detalle:
+            parada['error'] += f' Detalle: {detalle}'
+        return None, parada['error']
+
+    direccion_resuelta = normalizar_direccion(resultado.get('address') or direccion)
+    clave_resuelta = _clave_direccion(direccion_resuelta)
+    if any(
+        existente is not parada
+        and isinstance(existente, dict)
+        and _clave_direccion(existente.get('address')) == clave_resuelta
+        for existente in paradas
+    ):
+        parada['estado'] = 'error'
+        parada['error'] = 'La dirección geolocalizada ya está en el listado.'
+        return None, parada['error']
+
+    parada['lat'] = resultado['lat']
+    parada['lng'] = resultado['lng']
+    parada['address'] = direccion_resuelta
+    parada['estado'] = 'geolocalizada'
+    parada.pop('error', None)
+    return parada, None
+
+
+def completar_alta_parada(paradas, parada, geocodificador=None):
+    """Resolve and apply a provisional stop synchronously for compatibility."""
+    resultado, detalle = resolver_geocodificacion(
+        parada.get('address') if isinstance(parada, dict) else '',
+        geocodificador,
+    )
+    return aplicar_alta_geocodificada(paradas, parada, resultado, detalle)
+
+
 def _haversine(lat1, lng1, lat2, lng2):
     """Distancia en km entre dos puntos (fórmula haversine)."""
     r = 6371.0
@@ -705,11 +803,10 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
 
     base_url = f'https://www.google.com/maps/dir/?api=1&travelmode={travelmode}'
     origen = f'&origin={origen_lat},{origen_lng}'
-    destino = f'&destination={paradas_priorizadas[-1]["lat"]},{paradas_priorizadas[-1]["lng"]}'
-    waypoints = ''
-    if len(paradas_priorizadas) > 1:
-        w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas[:-1]]
-        waypoints = '&waypoints=' + '|'.join(w_coords)
+    # A delivery route is closed: the current depot is both origin and destination.
+    destino = f'&destination={origen_lat},{origen_lng}'
+    w_coords = [f"{p['lat']},{p['lng']}" for p in paradas_priorizadas]
+    waypoints = '&waypoints=' + '|'.join(w_coords)
 
     return base_url + origen + destino + waypoints
 
