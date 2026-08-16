@@ -460,26 +460,76 @@ class RepartidorApp(App if App is not object else object):
 
     def _procesar_texto_ocr(self, texto, filepath):
         try:
-            candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
-            if candidatos:
-                self._mostrar_confirmacion(candidatos, 'cámara')
+            componentes = repartidor.construir_direccion_estructurada(texto)
+            direccion_completa = componentes.get('direccion_completa', '').strip()
+            if direccion_completa:
+                self._set_estado(
+                    f'Dirección detectada: {direccion_completa}. Geocodificando…'
+                )
+                self._ejecutar_en_segundo_plano(
+                    lambda: self._geocodificar_y_abrir_ocr(componentes)
+                )
             else:
-                self._set_estado('No se detectó una dirección válida en la imagen.')
+                candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
+                if candidatos:
+                    self._mostrar_confirmacion(candidatos, 'cámara')
+                else:
+                    self._set_estado('No se detectó una dirección válida en la imagen.')
         finally:
             self._eliminar_temporal(filepath)
             self._temp_scan_path = None
             self._camera_en_curso = False
 
+    def _geocodificar_y_abrir_ocr(self, componentes):
+        """Geocode structured OCR address, add stop, and open Maps automatically."""
+        direccion_completa = componentes.get('direccion_completa', '')
+        resultado, detalle = repartidor.resolver_geocodificacion(
+            direccion_completa,
+            geocodificador=repartidor.buscar_direccion_texto,
+        )
+        self._dispatch_ui(
+            lambda: self._finalizar_ocr(componentes, resultado, detalle)
+        )
+
+    def _finalizar_ocr(self, componentes, resultado, detalle):
+        direccion_completa = componentes.get('direccion_completa', '')
+        if not isinstance(resultado, dict) or not repartidor.coordenadas_validas(
+            resultado.get('lat'), resultado.get('lng')
+        ):
+            self._set_estado(
+                f'No se geocodificó "{direccion_completa}". '
+                f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
+            )
+            return
+        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        resultado['prioridad'] = prioridad
+        resultado['paqueteria'] = self._paqueteria
+        resultado['notificacion'] = self._notificacion
+        resultado['estado'] = 'pendiente'
+        resultado.setdefault('address', direccion_completa)
+        self.lista_paradas.append(resultado)
+        self._set_estado(
+            f'Parada añadida desde cámara: {resultado["address"]}. Abriendo Maps…'
+        )
+        self._refrescar_lista()
+        self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
+
+    def _abrir_maps_ubicacion(self, lat, lng):
+        """Open Google Maps centered on the given coordinates (non-blocking)."""
+        url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
+        self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
+
     def _usar_direccion_ocr(self, direccion, cp):
-        candidatos = []
         if direccion and cp:
-            candidatos.append(f'{direccion}, {cp}')
+            texto = f'{direccion}, {cp}'
         elif direccion:
-            candidatos.append(direccion)
-        if candidatos:
-            self._mostrar_confirmacion(candidatos, 'cámara')
+            texto = direccion
         else:
             self._set_estado('No se detectó una dirección válida en la imagen.')
+            return
+        componentes = repartidor.construir_direccion_estructurada(texto)
+        direccion_completa = componentes.get('direccion_completa') or texto
+        self._mostrar_confirmacion([direccion_completa], 'cámara')
 
     def _error_captura(self, error, filepath):
         self._eliminar_temporal(filepath)

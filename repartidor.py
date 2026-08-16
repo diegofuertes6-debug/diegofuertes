@@ -170,6 +170,94 @@ def extraer_direccion_texto_ocr(texto):
     return direccion, cp_final
 
 
+def construir_direccion_estructurada(texto):
+    """Parse OCR text into structured Spanish address components.
+
+    Returns:
+        dict: {
+            'calle_tipo': str,       # ej: 'Calle', 'Avenida', 'Plaza'
+            'calle_nombre': str,     # ej: 'Mayor'
+            'numero': str,           # ej: '42'
+            'codigo_postal': str,    # ej: '28001'
+            'poblacion': str,        # ej: 'Madrid'
+            'direccion_completa': str,  # dirección formateada lista para geocodificar
+        }
+    """
+    texto = str(texto or '')
+
+    result = {
+        'calle_tipo': '',
+        'calle_nombre': '',
+        'numero': '',
+        'codigo_postal': '',
+        'poblacion': '',
+        'direccion_completa': '',
+    }
+
+    # Extract postal code (5 digits)
+    cp_match = re.search(r'\b(\d{5})\b', texto)
+    if cp_match:
+        result['codigo_postal'] = cp_match.group(1)
+
+    # Extract street type prefix
+    tipo_pattern = re.compile(
+        r'(?<!\w)(Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
+        r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
+        re.IGNORECASE,
+    )
+    tipo_match = tipo_pattern.search(texto)
+    if tipo_match:
+        result['calle_tipo'] = tipo_match.group(1)
+        resto = texto[tipo_match.end():].strip()
+        # Street name followed optionally by a number: "Mayor, 42" or "Mayor 42"
+        nombre_num = re.match(
+            r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)[\s,]+(\d{1,4}[A-Za-z]?)',
+            resto,
+        )
+        if nombre_num:
+            result['calle_nombre'] = nombre_num.group(1).strip(' ,')
+            result['numero'] = nombre_num.group(2).strip()
+        else:
+            nombre_solo = re.match(r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)', resto)
+            if nombre_solo:
+                result['calle_nombre'] = nombre_solo.group(1).strip(' ,')
+
+    # Extract city name: text after the postal code up to the next number or end
+    if cp_match:
+        after_cp = texto[cp_match.end():].strip()
+        after_cp = re.sub(r'^[\s,;:\-]+', '', after_cp)
+        ciudad_match = re.match(r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)', after_cp)
+        if ciudad_match:
+            result['poblacion'] = ciudad_match.group(1).strip()
+
+    # Build the complete address string
+    partes_calle = []
+    if result['calle_tipo'] and result['calle_nombre']:
+        partes_calle.append(f"{result['calle_tipo']} {result['calle_nombre']}")
+    elif result['calle_nombre']:
+        partes_calle.append(result['calle_nombre'])
+
+    if result['numero']:
+        if partes_calle:
+            partes_calle[-1] += f" {result['numero']}"
+        else:
+            partes_calle.append(result['numero'])
+
+    partes_loc = []
+    if result['codigo_postal']:
+        partes_loc.append(result['codigo_postal'])
+    if result['poblacion']:
+        partes_loc.append(result['poblacion'])
+
+    partes = partes_calle[:]
+    if partes_loc:
+        partes.append(' '.join(partes_loc))
+
+    result['direccion_completa'] = ', '.join(partes)
+
+    return result
+
+
 def normalizar_direccion(texto):
     """Normalize user-provided address text without changing its meaning."""
     texto = re.sub(r'[\r\n\t]+', ' ', str(texto or ''))
