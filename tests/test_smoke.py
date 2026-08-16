@@ -326,6 +326,18 @@ class AndroidServicesTests(unittest.TestCase):
             [(False, list(android_services.CAMERA_PERMISSIONS))],
         )
 
+    def test_reconocimiento_voz_concurrente_se_rechaza(self):
+        errores = []
+        android_services._speech_callback = object()
+        try:
+            android_services.start_speech_recognition(
+                lambda _texto: self.fail('No debe iniciar otro reconocimiento.'),
+                errores.append,
+            )
+        finally:
+            android_services._speech_callback = None
+        self.assertEqual(errores, ['Ya hay un reconocimiento de voz en curso.'])
+
 
 class OcrDireccionTests(unittest.TestCase):
     def test_extrae_direccion_y_codigo_postal(self):
@@ -337,6 +349,169 @@ class OcrDireccionTests(unittest.TestCase):
 
     def test_texto_ocr_vacio(self):
         self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
+
+    def test_ocr_devuelve_varios_candidatos_sin_lineas_de_ruido(self):
+        candidatos = repartidor.extraer_candidatos_direccion_ocr(
+            'PEDIDO 123\nCalle Mayor 15\n28013 Madrid\n'
+            'Avenida de América 24, 28028 Madrid\nTOTAL 19,95'
+        )
+        self.assertEqual(len(candidatos), 2)
+        self.assertTrue(candidatos[0].startswith(('Calle', 'Avenida')))
+        self.assertNotIn('PEDIDO', ' '.join(candidatos))
+        self.assertNotIn('TOTAL', ' '.join(candidatos))
+
+    def test_ocr_acepta_abreviatura_y_lineas_separadas(self):
+        self.assertEqual(
+            repartidor.extraer_candidatos_direccion_ocr(
+                'C/ Mayor\n15\n28013 Madrid'
+            ),
+            ['C/ Mayor, 15, 28013 Madrid'],
+        )
+
+
+class AnadirParadaComunTests(unittest.TestCase):
+    def setUp(self):
+        self.paradas = []
+        self.geocodificador = MagicMock(return_value={
+            'address': 'Calle Mayor, 15, 28013 Madrid, España',
+            'lat': 40.4168,
+            'lng': -3.7038,
+            'estado': 'pendiente',
+        })
+
+    def test_normaliza_geocodifica_y_conserva_metadatos(self):
+        parada, error = repartidor.validar_y_anadir_parada(
+            self.paradas,
+            '  Calle   Mayor 15, 28013 Madrid  ',
+            geocodificador=self.geocodificador,
+            prioridad='alta',
+            paqueteria='Correos',
+            notificacion='SMS',
+        )
+        self.assertIsNone(error)
+        self.assertIs(parada, self.paradas[0])
+        self.geocodificador.assert_called_once_with('Calle Mayor 15, 28013 Madrid')
+        self.assertEqual(parada['prioridad'], 'alta')
+        self.assertEqual(parada['estado'], 'pendiente')
+        self.assertEqual(parada['paqueteria'], 'Correos')
+        self.assertEqual(parada['notificacion'], 'SMS')
+
+    def test_rechaza_vacia_o_invalida_sin_geocodificar(self):
+        for texto in ('', '   ', '1234'):
+            parada, error = repartidor.validar_y_anadir_parada(
+                self.paradas, texto, geocodificador=self.geocodificador
+            )
+            self.assertIsNone(parada)
+            self.assertIn('válida', error)
+        self.geocodificador.assert_not_called()
+
+    def test_evitar_duplicado_formateado_por_geocodificador(self):
+        primera, error = repartidor.validar_y_anadir_parada(
+            self.paradas, 'Calle Mayor 15', geocodificador=self.geocodificador
+        )
+        self.assertIsNone(error)
+        self.assertIsNotNone(primera)
+        segunda, error = repartidor.validar_y_anadir_parada(
+            self.paradas, 'calle mayor, 15', geocodificador=self.geocodificador
+        )
+        self.assertIsNone(segunda)
+        self.assertIn('ya está', error)
+        self.assertEqual(len(self.paradas), 1)
+
+    def test_rechaza_geocodificacion_sin_coordenadas(self):
+        parada, error = repartidor.validar_y_anadir_parada(
+            self.paradas,
+            'Calle inexistente 99',
+            geocodificador=lambda _texto: None,
+        )
+        self.assertIsNone(parada)
+        self.assertIn('coordenadas', error)
+
+
+class FlujosEntradaParadaTests(unittest.TestCase):
+    def _app(self):
+        app = main.RepartidorApp()
+        app.lbl_estado = types.SimpleNamespace(text='')
+        app.txt_busqueda = types.SimpleNamespace(text='')
+        app.spinner_prioridad = types.SimpleNamespace(text='media')
+        app.lista_widget = None
+        return app
+
+    def test_camara_propone_ocr_para_confirmar_y_limpia_temporal(self):
+        app = self._app()
+        with tempfile.TemporaryDirectory() as tmp:
+            foto = Path(tmp) / 'scan.jpg'
+            foto.write_bytes(b'image')
+            app._mostrar_confirmacion = MagicMock()
+            app._procesar_texto_ocr('Calle Alcalá 10\n28014 Madrid', str(foto))
+            app._mostrar_confirmacion.assert_called_once()
+            candidatos, origen = app._mostrar_confirmacion.call_args.args
+            self.assertEqual(origen, 'cámara')
+            self.assertIn('Calle Alcalá 10', candidatos[0])
+            self.assertFalse(foto.exists())
+            self.assertFalse(app._camera_en_curso)
+
+    def test_segunda_camara_no_borra_captura_en_curso(self):
+        app = self._app()
+        with tempfile.TemporaryDirectory() as tmp:
+            foto = Path(tmp) / 'temp_scan.jpg'
+            foto.write_bytes(b'image-in-progress')
+            app.user_data_dir = tmp
+            app._camera_en_curso = True
+            with patch('main.android_services.capture_photo') as captura:
+                app._abrir_camara()
+            captura.assert_not_called()
+            self.assertEqual(foto.read_bytes(), b'image-in-progress')
+            self.assertIn('en curso', app.lbl_estado.text)
+
+    @patch(
+        'main.repartidor.leer_texto_imagen',
+        return_value=(
+            'Calle Alcalá 10, 28014 Madrid\n'
+            'Avenida de América 24, 28028 Madrid'
+        ),
+    )
+    @patch('main.android_services.is_android', return_value=False)
+    def test_camara_escritorio_conserva_y_permite_elegir_segundo_candidato(
+        self, _android, _ocr
+    ):
+        app = self._app()
+        with tempfile.TemporaryDirectory() as tmp:
+            foto = Path(tmp) / 'scan.jpg'
+            foto.write_bytes(b'image')
+            app._mostrar_confirmacion = MagicMock()
+            app._procesar_foto(str(foto))
+
+        app._mostrar_confirmacion.assert_called_once()
+        candidatos, origen = app._mostrar_confirmacion.call_args.args
+        self.assertEqual(origen, 'cámara')
+        self.assertEqual(len(candidatos), 2)
+        entrada = types.SimpleNamespace(text=candidatos[0])
+        app._seleccionar_candidato(entrada, candidatos[1])
+        self.assertEqual(entrada.text, candidatos[1])
+        self.assertIn('Avenida de América 24', entrada.text)
+        self.assertFalse(foto.exists())
+        self.assertFalse(app._camera_en_curso)
+
+    @patch('main.repartidor.dictar_direccion', return_value='Gran Vía 28, Madrid')
+    @patch('main.android_services.is_android', return_value=False)
+    def test_microfono_propone_texto_para_confirmar(self, _android, _dictado):
+        app = self._app()
+        app._mostrar_confirmacion = MagicMock()
+        app.dictar_microfono()
+        app._mostrar_confirmacion.assert_called_once_with(
+            ['Gran Vía 28, Madrid'], 'micrófono'
+        )
+
+    def test_lupa_y_enter_comparten_busqueda_manual(self):
+        app = self._app()
+        app.txt_busqueda.text = 'Calle Serrano 12'
+        app._validar_y_anadir = MagicMock(return_value=True)
+        app.buscar_manual()
+        app._validar_y_anadir.assert_called_once_with(
+            'Calle Serrano 12', 'búsqueda'
+        )
+        self.assertEqual(app.txt_busqueda.text, '')
 
 
 class BuscarDireccionTests(unittest.TestCase):

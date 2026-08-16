@@ -6,9 +6,13 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 - **Geolocalización**: muestra la posición actual del repartidor (requiere permiso de ubicación).
 - **Entrada de paradas** por tres canales:
-  - 📷 Cámara: toma una foto y extrae la dirección por OCR.
-  - 🎙 Micrófono: dicta la dirección por voz (speech-to-text).
-  - 🔍 Búsqueda manual: escribe la dirección directamente.
+  - 📷 Cámara: toma una foto, propone una o varias direcciones extraídas por
+    OCR y permite seleccionar, editar y confirmar antes de añadir.
+  - 🎙 Micrófono: dicta la dirección por voz (speech-to-text), revisa el texto
+    reconocido y confírmalo antes de añadir.
+  - 🔍 Búsqueda manual: escribe la dirección y pulsa la lupa o Enter.
+  Los tres canales comparten validación, geocodificación y detección de
+  duplicados, y siempre muestran si la parada se añadió o por qué se rechazó.
 - **Prioridades**: asigna prioridad alta / media / baja a cada parada.
 - **Paquetería y notificación**: selectores contextuales que guardan ambas
   opciones en cada parada nueva.
@@ -65,6 +69,8 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 ### Cámara
 - Pulsa el botón **📷 Cámara**.
 - En Android abre la cámara nativa y procesa la foto localmente con ML Kit.
+- Revisa la dirección propuesta. Si hay varios candidatos, selecciónala en la
+  lista; también puedes editar el texto antes de pulsar **Añadir parada**.
 - El archivo temporal se elimina al completar o fallar el OCR.
 - En escritorio intenta capturar un fotograma con OpenCV (`cv2`).
 - El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
@@ -72,6 +78,7 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 ### Micrófono
 - Pulsa el botón **🎙 Micrófono**.
 - En Android lanza el intent `ACTION_RECOGNIZE_SPEECH` del sistema.
+- Revisa o corrige el texto reconocido y pulsa **Añadir parada**.
 - En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.
   - Instálala con: `pip install SpeechRecognition pyaudio`
 - Si el reconocimiento falla, la app muestra un mensaje y puedes usar la búsqueda manual.

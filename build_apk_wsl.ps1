@@ -11,3 +11,4 @@ Write-Host "Invocando WSL en: $wslPath"
 
 # Ejecutar script en WSL (requiere que WSL y la distro estén instaladas)
 wsl bash -lc "chmod +x '$wslPath/build_apk.sh' && '$wslPath/build_apk.sh'"
+exit $LASTEXITCODE

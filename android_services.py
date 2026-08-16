@@ -328,6 +328,10 @@ def start_speech_recognition(on_success, on_error):
     """Launch Android speech recognition and return its first result."""
     global _speech_callback
 
+    if _speech_callback is not None:
+        on_error('Ya hay un reconocimiento de voz en curso.')
+        return
+
     try:
         from android import activity
         from android import mActivity
@@ -371,6 +375,27 @@ def start_speech_recognition(on_success, on_error):
             pass
         _speech_callback = None
         on_error(f'El reconocimiento de voz no está disponible: {exc}')
+
+
+def cancel_pending_activities():
+    """Unbind pending Android result listeners when the app is stopping."""
+    global _camera_callback, _speech_callback
+    if not is_android():
+        _camera_callback = None
+        _speech_callback = None
+        return
+    try:
+        from android import activity
+
+        if _camera_callback is not None:
+            activity.unbind(on_activity_result=_camera_callback)
+        if _speech_callback is not None:
+            activity.unbind(on_activity_result=_speech_callback)
+    except (ImportError, AttributeError):
+        pass
+    finally:
+        _camera_callback = None
+        _speech_callback = None
 
 
 def _dispatch(callback, *args):
