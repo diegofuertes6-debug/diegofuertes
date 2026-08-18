@@ -23,23 +23,26 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 ---
 
-## Configuración de la API key de Google Maps
+## Configuración segura de la API key de Google Maps
 
-1. Crea (o edita) el archivo `webServerApiSettings.json` en la raíz del proyecto:
+1. Copia el archivo de ejemplo de variables:
 
-   ```json
-   {
-     "googleMapsApiKey": "TU_API_KEY_AQUÍ"
-   }
+   ```bash
+   cp .env.example .env
    ```
 
-2. Alternativamente, define la variable de entorno `GOOGLE_MAPS_API_KEY` o añade la clave en un archivo `.env`:
+2. Edita `.env` y define tu clave:
 
    ```
    GOOGLE_MAPS_API_KEY=TU_API_KEY_AQUÍ
    ```
 
-3. La API key debe tener habilitada la API **Geocoding** en Google Cloud Console.
+3. (Opcional para APK/CI) Si compilas en GitHub Actions, crea el secret
+   `GOOGLE_MAPS_API_KEY` en el repositorio. El workflow genera
+   `webServerApiSettings.json` automáticamente durante el build sin versionar
+   la clave.
+
+4. La API key debe tener habilitada la API **Geocoding** en Google Cloud Console.
    La app abre Google Maps mediante URL/intent del sistema; no usa Maps JavaScript embebido.
    Si la clave existe pero esa API no está activada o no tiene cuota/permisos,
    las direcciones no podrán geocodificarse.
