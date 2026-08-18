@@ -39,8 +39,10 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
    GOOGLE_MAPS_API_KEY=TU_API_KEY_AQUÍ
    ```
 
-3. La API key debe tener habilitada la API **Geocoding**.
+3. La API key debe tener habilitada la API **Geocoding** en Google Cloud Console.
    La app abre Google Maps mediante URL/intent del sistema; no usa Maps JavaScript embebido.
+   Si la clave existe pero esa API no está activada o no tiene cuota/permisos,
+   las direcciones no podrán geocodificarse.
 
 > **Nota**: sin API key la app no puede hacer elegible una dirección para la
 > ruta. La parada muestra error de geolocalización y permite corregir o

@@ -439,7 +439,8 @@ class RepartidorApp(App if App is not object else object):
         try:
             componentes = repartidor.construir_direccion_estructurada(texto)
             direccion_completa = componentes.get('direccion_completa', '').strip()
-            if direccion_completa:
+            calle_nombre = componentes.get('calle_nombre', '').strip()
+            if direccion_completa and calle_nombre:
                 self._set_estado(
                     f'Dirección detectada: {direccion_completa}. Geocodificando…'
                 )
@@ -499,18 +500,6 @@ class RepartidorApp(App if App is not object else object):
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
         self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
 
-    def _usar_direccion_ocr(self, direccion, cp):
-        if direccion and cp:
-            texto = f'{direccion}, {cp}'
-        elif direccion:
-            texto = direccion
-        else:
-            self._set_estado('No se detectó una dirección válida en la imagen.')
-            return
-        componentes = repartidor.construir_direccion_estructurada(texto)
-        direccion_completa = componentes.get('direccion_completa') or texto
-        self._mostrar_confirmacion([direccion_completa], 'cámara')
-
     def _error_captura(self, error, filepath):
         self._eliminar_temporal(filepath)
         self._temp_scan_path = None
@@ -564,7 +553,7 @@ class RepartidorApp(App if App is not object else object):
     def _mostrar_confirmacion(self, candidatos, origen):
         candidatos_normalizados = []
         for candidato in candidatos:
-            preparado = repartidor.preparar_texto_direccion(candidato)
+            preparado = repartidor.normalizar_direccion(candidato)
             if preparado:
                 candidatos_normalizados.append(preparado)
         candidatos = candidatos_normalizados

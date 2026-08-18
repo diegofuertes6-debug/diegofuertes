@@ -561,6 +561,30 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             self.assertFalse(foto.exists())
             self.assertFalse(app._camera_en_curso)
 
+    def test_camara_ocr_sin_calle_detectada_abre_confirmacion(self):
+        app = self._app()
+        app._mostrar_confirmacion = MagicMock()
+        app._ejecutar_en_segundo_plano = MagicMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            foto = Path(tmp) / 'scan.jpg'
+            foto.write_bytes(b'image')
+            app._procesar_texto_ocr(
+                'Calle\n28013 Madrid',
+                str(foto),
+            )
+        app._ejecutar_en_segundo_plano.assert_not_called()
+        app._mostrar_confirmacion.assert_called_once_with(
+            ['Calle, 28013 Madrid'],
+            'cámara',
+        )
+        self.assertFalse(foto.exists())
+        self.assertFalse(app._camera_en_curso)
+
+    def test_confirmacion_preserva_vista_previa_ocr_hasta_validacion(self):
+        app = self._app()
+        app._mostrar_confirmacion(['Calle\nMayor\n42'], 'cámara')
+        self.assertEqual(app.txt_busqueda.text, 'Calle Mayor 42')
+
     def test_segunda_camara_no_borra_captura_en_curso(self):
         app = self._app()
         with tempfile.TemporaryDirectory() as tmp:
