@@ -265,6 +265,16 @@ def normalizar_direccion(texto):
     return texto
 
 
+def preparar_texto_direccion(texto):
+    """Normalize free-form address text and keep the best structured version."""
+    texto = normalizar_direccion(texto)
+    if not texto:
+        return ''
+    componentes = construir_direccion_estructurada(texto)
+    estructurada = normalizar_direccion(componentes.get('direccion_completa', ''))
+    return estructurada or texto
+
+
 def extraer_candidatos_direccion_ocr(texto):
     """Return plausible address lines ordered by confidence, without OCR noise."""
     texto = str(texto or '').replace('\r', '\n')
@@ -443,7 +453,7 @@ def validar_y_anadir_parada(
     if not isinstance(paradas, list):
         return None, 'No se pudo acceder al listado de paradas.'
 
-    direccion = normalizar_direccion(texto)
+    direccion = preparar_texto_direccion(texto)
     if len(direccion) < 5 or not re.search(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]', direccion):
         return None, 'Introduce una dirección válida antes de añadirla.'
 
@@ -488,7 +498,7 @@ def iniciar_alta_parada(
     """Append one provisional stop that is not routable until geocoding succeeds."""
     if not isinstance(paradas, list):
         return None, 'No se pudo acceder al listado de paradas.'
-    direccion = normalizar_direccion(texto)
+    direccion = preparar_texto_direccion(texto)
     if len(direccion) < 5 or not re.search(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]', direccion):
         return None, 'Introduce una dirección válida antes de añadirla.'
     clave = _clave_direccion(direccion)
@@ -514,7 +524,7 @@ def iniciar_alta_parada(
 def resolver_geocodificacion(texto, geocodificador=None):
     """Run only the potentially blocking geocoder, without mutating UI state."""
     geocodificador = geocodificador or buscar_direccion_texto
-    direccion = normalizar_direccion(texto)
+    direccion = preparar_texto_direccion(texto)
     try:
         resultado = geocodificador(direccion)
     except Exception as exc:
@@ -572,6 +582,30 @@ def completar_alta_parada(paradas, parada, geocodificador=None):
         parada.get('address') if isinstance(parada, dict) else '',
         geocodificador,
     )
+    return aplicar_alta_geocodificada(paradas, parada, resultado, detalle)
+
+
+def registrar_alta_geocodificada(
+    paradas,
+    texto,
+    resultado,
+    detalle='',
+    origen='entrada',
+    prioridad='media',
+    paqueteria=None,
+    notificacion=None,
+):
+    """Apply a precomputed geocoder result through the common stop pipeline."""
+    parada, error = iniciar_alta_parada(
+        paradas,
+        texto,
+        origen=origen,
+        prioridad=prioridad,
+        paqueteria=paqueteria,
+        notificacion=notificacion,
+    )
+    if error:
+        return None, error
     return aplicar_alta_geocodificada(paradas, parada, resultado, detalle)
 
 
@@ -771,7 +805,7 @@ def buscar_direccion_texto(texto):
         dict or None: Parada con campos ``lat``, ``lng``, ``address``,
                       ``prioridad`` o ``None`` si no se pudo resolver.
     """
-    texto = (texto or '').strip()
+    texto = preparar_texto_direccion(texto)
     if not texto:
         return None
 

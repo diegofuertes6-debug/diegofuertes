@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import webbrowser
@@ -34,8 +33,6 @@ except ImportError:  # pragma: no cover
 import repartidor
 import android_services
 
-CONFIG_FILE = 'webServerApiSettings.json'
-
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_CARTAS = 'Cartas'
@@ -50,10 +47,6 @@ def _project_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _config_path():
-    return os.path.join(_project_dir(), CONFIG_FILE)
-
-
 def _hora_actual():
     """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
     from datetime import datetime
@@ -64,7 +57,7 @@ class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lista_paradas = []
-        self.api_key = repartidor.API_KEY or self._cargar_api_key_legacy()
+        self.api_key = repartidor.cargar_api_key()
         self.lbl_estado = None
         self.btn_ruta = None
         self.lista_widget = None
@@ -90,22 +83,6 @@ class RepartidorApp(App if App is not object else object):
         self._resume_location_after_pause = False
         self._open_map_when_located = False
 
-    # ------------------------------------------------------------------
-    # Legacy API key loader (compatible con el JSON existente)
-    # ------------------------------------------------------------------
-    def _cargar_api_key_legacy(self):
-        config_path = _config_path()
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict):
-                    return str(data.get('googleMapsApiKey', '') or '')
-            except (OSError, ValueError):
-                pass
-        return ''
-
-    # ------------------------------------------------------------------
     # Build UI
     # ------------------------------------------------------------------
     def build(self):
@@ -493,26 +470,29 @@ class RepartidorApp(App if App is not object else object):
 
     def _finalizar_ocr(self, componentes, resultado, detalle):
         direccion_completa = componentes.get('direccion_completa', '')
-        if not isinstance(resultado, dict) or not repartidor.coordenadas_validas(
-            resultado.get('lat'), resultado.get('lng')
-        ):
+        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        parada, error = repartidor.registrar_alta_geocodificada(
+            self.lista_paradas,
+            direccion_completa,
+            resultado,
+            detalle=detalle,
+            origen='cámara',
+            prioridad=prioridad,
+            paqueteria=self._paqueteria,
+            notificacion=self._notificacion,
+        )
+        if error:
             self._set_estado(
                 f'No se geocodificó "{direccion_completa}". '
-                f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
+                f'{error}'
             )
+            self._refrescar_lista()
             return
-        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
-        resultado['prioridad'] = prioridad
-        resultado['paqueteria'] = self._paqueteria
-        resultado['notificacion'] = self._notificacion
-        resultado['estado'] = 'pendiente'
-        resultado.setdefault('address', direccion_completa)
-        self.lista_paradas.append(resultado)
         self._set_estado(
-            f'Parada añadida desde cámara: {resultado["address"]}. Abriendo Maps…'
+            f'Parada añadida desde cámara: {parada["address"]}. Abriendo Maps…'
         )
         self._refrescar_lista()
-        self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
+        self._abrir_maps_ubicacion(parada['lat'], parada['lng'])
 
     def _abrir_maps_ubicacion(self, lat, lng):
         """Open Google Maps centered on the given coordinates (non-blocking)."""
@@ -574,6 +554,7 @@ class RepartidorApp(App if App is not object else object):
         if not texto:
             self._set_estado('Escribe una dirección primero.')
             return
+        texto = repartidor.preparar_texto_direccion(texto)
         if self._validar_y_anadir(texto, 'búsqueda') and self.txt_busqueda:
             self.txt_busqueda.text = ''
 
@@ -581,11 +562,12 @@ class RepartidorApp(App if App is not object else object):
     # Geocodificación y gestión de paradas
     # ------------------------------------------------------------------
     def _mostrar_confirmacion(self, candidatos, origen):
-        candidatos = [
-            repartidor.normalizar_direccion(candidato)
-            for candidato in candidatos
-            if repartidor.normalizar_direccion(candidato)
-        ]
+        candidatos_normalizados = []
+        for candidato in candidatos:
+            preparado = repartidor.preparar_texto_direccion(candidato)
+            if preparado:
+                candidatos_normalizados.append(preparado)
+        candidatos = candidatos_normalizados
         if not candidatos:
             self._set_estado(f'No se recibió una dirección válida por {origen}.')
             return
@@ -674,7 +656,7 @@ class RepartidorApp(App if App is not object else object):
         self._set_estado('Adición cancelada. Puedes escribir otra dirección.')
 
     def _confirmar_propuesta(self, popup, entrada, origen, feedback):
-        texto = repartidor.normalizar_direccion(entrada.text)
+        texto = repartidor.preparar_texto_direccion(entrada.text)
         if self.txt_busqueda is not None:
             self.txt_busqueda.text = texto
         if not self._validar_y_anadir(texto, origen):
@@ -766,7 +748,9 @@ class RepartidorApp(App if App is not object else object):
 
     def _geocodificar_y_añadir(self, texto):
         """Compatibility wrapper for callers using the former shared path."""
-        return self._validar_y_anadir(texto, 'entrada')
+        return self._validar_y_anadir(
+            repartidor.preparar_texto_direccion(texto), 'entrada'
+        )
 
     def _refrescar_lista(self):
         if self.lista_widget is None:

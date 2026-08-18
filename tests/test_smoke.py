@@ -423,6 +423,12 @@ class OcrDireccionTests(unittest.TestCase):
             ['C/ Mayor, 15, 28013 Madrid'],
         )
 
+    def test_preparar_texto_direccion_recompone_multilinea(self):
+        self.assertEqual(
+            repartidor.preparar_texto_direccion('Calle Mayor\n15\n28013 Madrid'),
+            'Calle Mayor 15, 28013 Madrid',
+        )
+
 
 class AnadirParadaComunTests(unittest.TestCase):
     def setUp(self):
@@ -509,6 +515,30 @@ class AnadirParadaComunTests(unittest.TestCase):
         self.assertEqual(fallida['estado'], 'error')
         self.assertNotIn('lat', fallida)
 
+    def test_registrar_alta_geocodificada_reutiliza_pipeline_comun(self):
+        parada, error = repartidor.registrar_alta_geocodificada(
+            self.paradas,
+            'Calle Mayor\n15\n28013 Madrid',
+            {
+                'address': 'Calle Mayor 15, 28013 Madrid, España',
+                'lat': 40.4168,
+                'lng': -3.7038,
+            },
+            origen='cámara',
+            prioridad='alta',
+            paqueteria='Urgente',
+            notificacion='Carta ordinaria',
+        )
+        self.assertIsNone(error)
+        self.assertEqual(len(self.paradas), 1)
+        self.assertIs(parada, self.paradas[0])
+        self.assertEqual(parada['address'], 'Calle Mayor 15, 28013 Madrid, España')
+        self.assertEqual(parada['estado'], 'geolocalizada')
+        self.assertEqual(parada['origen'], 'cámara')
+        self.assertEqual(parada['prioridad'], 'alta')
+        self.assertEqual(parada['paqueteria'], 'Urgente')
+        self.assertEqual(parada['notificacion'], 'Ordinaria')
+
 
 class FlujosEntradaParadaTests(unittest.TestCase):
     def _app(self):
@@ -582,6 +612,10 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app._finalizar_ocr(componentes, resultado, '')
         self.assertEqual(len(app.lista_paradas), 1)
         self.assertEqual(app.lista_paradas[0]['address'], 'Calle Mayor 42, Madrid')
+        self.assertEqual(app.lista_paradas[0]['estado'], 'geolocalizada')
+        self.assertEqual(app.lista_paradas[0]['origen'], 'cámara')
+        self.assertEqual(app.lista_paradas[0]['paqueteria'], 'Normal')
+        self.assertEqual(app.lista_paradas[0]['notificacion'], 'Sin cartas')
         app._abrir_maps_ubicacion.assert_called_once_with(40.416, -3.703)
         self.assertIn('Maps', app.lbl_estado.text)
 
@@ -597,7 +631,9 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         }
         app._abrir_maps_ubicacion = MagicMock()
         app._finalizar_ocr(componentes, None, 'sin resultados')
-        self.assertEqual(len(app.lista_paradas), 0)
+        self.assertEqual(len(app.lista_paradas), 1)
+        self.assertEqual(app.lista_paradas[0]['estado'], 'error')
+        self.assertEqual(app.lista_paradas[0]['origen'], 'cámara')
         app._abrir_maps_ubicacion.assert_not_called()
         self.assertIn('sin resultados', app.lbl_estado.text)
 
