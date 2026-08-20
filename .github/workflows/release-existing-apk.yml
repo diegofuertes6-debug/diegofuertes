@@ -23,7 +23,7 @@ jobs:
             exit 1
           fi
 
-          source_apk="$(find bin -type f -name '*.apk' | head -n 1)"
+          source_apk="$(find bin -type f -name '*.apk' | sort | head -n 1)"
 
           if [ -z "$source_apk" ]; then
             echo "No se encontró ninguna APK en bin/"
