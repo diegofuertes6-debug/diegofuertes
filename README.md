@@ -28,7 +28,7 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 1. Define la variable de entorno `GOOGLE_MAPS_API_KEY` en tu entorno local:
 
    ```bash
-   export GOOGLE_MAPS_API_KEY="TU_API_KEY_AQUÍ"
+   export GOOGLE_MAPS_API_KEY="your-actual-api-key-here"
    ```
 
 2. En GitHub Actions o despliegues automatizados, guarda la clave en **GitHub Secrets** y expórtala como variable de entorno del job:

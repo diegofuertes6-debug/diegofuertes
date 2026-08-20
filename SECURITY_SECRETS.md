@@ -12,7 +12,7 @@
 ### Desarrollo local
 
 ```bash
-export GOOGLE_MAPS_API_KEY="TU_API_KEY_AQUÍ"
+export GOOGLE_MAPS_API_KEY="your-actual-api-key-here"
 ```
 
 ### GitHub Actions
