@@ -1006,5 +1006,177 @@ class LegacyCompatTests(unittest.TestCase):
         self.assertEqual(ordenadas[0]['prioridad'], 'alta')
 
 
+class AuthTests(unittest.TestCase):
+    """Pruebas del módulo de autenticación (auth.py)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    # -- registro ----------------------------------------------------------
+
+    def test_register_nuevo_usuario_devuelve_true(self):
+        import auth
+        self.assertTrue(auth.register_user(self.tmp, 'ana', 'secreto'))
+
+    def test_register_usuario_duplicado_devuelve_false(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertFalse(auth.register_user(self.tmp, 'ana', 'otra'))
+
+    def test_register_usuario_vacio_lanza_valueerror(self):
+        import auth
+        with self.assertRaises(ValueError):
+            auth.register_user(self.tmp, '  ', 'clave')
+
+    def test_register_contrasena_vacia_lanza_valueerror(self):
+        import auth
+        with self.assertRaises(ValueError):
+            auth.register_user(self.tmp, 'ana', '')
+
+    # -- verificación -------------------------------------------------------
+
+    def test_verify_credenciales_correctas(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertTrue(auth.verify_user(self.tmp, 'ana', 'secreto'))
+
+    def test_verify_contrasena_incorrecta(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertFalse(auth.verify_user(self.tmp, 'ana', 'mala'))
+
+    def test_verify_usuario_inexistente(self):
+        import auth
+        self.assertFalse(auth.verify_user(self.tmp, 'nadie', 'clave'))
+
+    # -- tipo de cuenta -----------------------------------------------------
+
+    def test_cuenta_nueva_es_trial_por_defecto(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        self.assertEqual(auth.get_account_type(self.tmp, 'ana'), auth.ACCOUNT_TRIAL)
+        self.assertTrue(auth.is_trial(self.tmp, 'ana'))
+
+    def test_upgrade_to_full_cambia_tipo(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        auth.upgrade_to_full(self.tmp, 'ana')
+        self.assertEqual(auth.get_account_type(self.tmp, 'ana'), auth.ACCOUNT_FULL)
+        self.assertFalse(auth.is_trial(self.tmp, 'ana'))
+
+    def test_upgrade_usuario_inexistente_devuelve_false(self):
+        import auth
+        self.assertFalse(auth.upgrade_to_full(self.tmp, 'nadie'))
+
+    def test_register_cuenta_full_directamente(self):
+        import auth
+        auth.register_user(self.tmp, 'admin', 'clave', account_type=auth.ACCOUNT_FULL)
+        self.assertFalse(auth.is_trial(self.tmp, 'admin'))
+
+    def test_has_any_user_sin_usuarios(self):
+        import auth
+        self.assertFalse(auth.has_any_user(self.tmp))
+
+    def test_has_any_user_con_usuario(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        self.assertTrue(auth.has_any_user(self.tmp))
+
+    # -- persistencia -------------------------------------------------------
+
+    def test_datos_persisten_entre_llamadas(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        # Simula que se recarga la app
+        self.assertTrue(auth.verify_user(self.tmp, 'ana', 'clave'))
+        self.assertTrue(auth.user_exists(self.tmp, 'ana'))
+
+
+class TrialLimitTests(unittest.TestCase):
+    """Pruebas del límite de paradas en versión prueba."""
+
+    def _app_trial(self, tmp):
+        """Crea una RepartidorApp con usuario trial registrado."""
+        import auth
+        auth.register_user(tmp, 'repartidor', 'clave')
+        app = main.RepartidorApp()
+        app.user_data_dir = tmp
+        app._usuario_actual = 'repartidor'
+        return app
+
+    def test_es_cuenta_trial_sin_usuario(self):
+        app = main.RepartidorApp()
+        app.user_data_dir = tempfile.mkdtemp()
+        app._usuario_actual = None
+        self.assertFalse(app._es_cuenta_trial())
+
+    def test_es_cuenta_trial_con_usuario_trial(self):
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        self.assertTrue(app._es_cuenta_trial())
+
+    def test_es_cuenta_trial_con_usuario_full(self):
+        import auth
+        tmp = tempfile.mkdtemp()
+        auth.register_user(tmp, 'pro', 'clave', account_type=auth.ACCOUNT_FULL)
+        app = main.RepartidorApp()
+        app.user_data_dir = tmp
+        app._usuario_actual = 'pro'
+        self.assertFalse(app._es_cuenta_trial())
+
+    def test_validar_y_anadir_bloquea_al_llegar_al_limite(self):
+        """Con 15 paradas en lista, la siguiente es rechazada en modo trial."""
+        import auth
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        # Rellenar la lista hasta el límite con paradas ficticias
+        for i in range(auth.TRIAL_MAX_PARADAS):
+            app.lista_paradas.append({
+                'address': f'Calle Falsa {i}',
+                'lat': 40.0 + i * 0.01,
+                'lng': -3.0,
+                'estado': 'geolocalizada',
+                'prioridad': 'media',
+            })
+        resultado = app._validar_y_anadir('Calle Nueva 1, Madrid', 'test')
+        self.assertFalse(resultado)
+        self.assertEqual(len(app.lista_paradas), auth.TRIAL_MAX_PARADAS)
+
+    def test_validar_y_anadir_permite_parada_antes_del_limite(self):
+        """Con menos de 15 paradas en lista trial, la adición sigue su curso."""
+        import auth
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        # 14 paradas — debería poder añadir una más (geocodificación mock)
+        for i in range(auth.TRIAL_MAX_PARADAS - 1):
+            app.lista_paradas.append({
+                'address': f'Calle Falsa {i}',
+                'lat': 40.0 + i * 0.01,
+                'lng': -3.0,
+                'estado': 'geolocalizada',
+                'prioridad': 'media',
+            })
+        with patch('repartidor.buscar_direccion_texto', return_value=None):
+            resultado = app._validar_y_anadir('Calle Real 100, Madrid', 'test')
+        self.assertTrue(resultado)
+
+
+class OpenMapUrlTests(unittest.TestCase):
+    """Pruebas del comportamiento de open_map_url en entorno de escritorio."""
+
+    def test_no_android_abre_con_webbrowser(self):
+        """En escritorio debe llamar a webbrowser.open, no al error callback."""
+        errores = []
+        with patch('android_services.is_android', return_value=False), \
+             patch('webbrowser.open') as mock_open:
+            result = android_services.open_map_url(
+                'https://maps.google.com/?q=test',
+                lambda msg: errores.append(msg),
+            )
+        self.assertTrue(result)
+        mock_open.assert_called_once()
+        self.assertEqual(errores, [])
+
+
 if __name__ == '__main__':
     unittest.main()

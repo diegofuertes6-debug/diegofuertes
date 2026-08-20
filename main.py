@@ -212,7 +212,12 @@ class RepartidorApp(App if App is not object else object):
     def _mostrar_login(self, *_args):
         """Muestra el popup de inicio de sesión al arrancar la app."""
         if Popup is object:
-            # Entorno sin Kivy: no bloqueamos la app
+            # Entorno sin Kivy (tests / escritorio sin display): arrancamos
+            # directamente sin requerir autenticación.
+            if Clock:
+                Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+            else:
+                self._solicitar_ubicacion_inicial()
             return
 
         contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
@@ -232,7 +237,7 @@ class RepartidorApp(App if App is not object else object):
         )
         txt_pass = TextInput(
             hint_text='Contraseña',
-            ******
+            password=True,
             multiline=False,
             size_hint_y=None,
             height='48dp',
@@ -326,7 +331,7 @@ class RepartidorApp(App if App is not object else object):
         )
         txt_pass = TextInput(
             hint_text='Contraseña',
-            ******
+            password=True,
             multiline=False,
             size_hint_y=None,
             height='48dp',
@@ -334,7 +339,7 @@ class RepartidorApp(App if App is not object else object):
         )
         txt_pass2 = TextInput(
             hint_text='Repite la contraseña',
-            ******
+            password=True,
             multiline=False,
             size_hint_y=None,
             height='48dp',
@@ -744,6 +749,17 @@ class RepartidorApp(App if App is not object else object):
                 f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
             )
             return
+        # Verificar límite de versión prueba
+        if self._es_cuenta_trial() and len(self.lista_paradas) >= auth.TRIAL_MAX_PARADAS:
+            self._set_estado(
+                f'⚠ Versión prueba: máximo {auth.TRIAL_MAX_PARADAS} paradas. '
+                'Hazte con la versión completa para añadir más.'
+            )
+            if Clock:
+                Clock.schedule_once(self._mostrar_donacion, 0.1)
+            else:
+                self._mostrar_donacion()
+            return
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
         resultado['prioridad'] = prioridad
         resultado['paqueteria'] = self._paqueteria
@@ -758,9 +774,12 @@ class RepartidorApp(App if App is not object else object):
         self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
 
     def _abrir_maps_ubicacion(self, lat, lng):
-        """Open Google Maps centered on the given coordinates (non-blocking)."""
+        """Abre Google Maps centrado en las coordenadas dadas."""
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
-        self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
+        if android_services.is_android():
+            android_services.open_map_url(url, lambda _: webbrowser.open(url))
+        else:
+            self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
 
     def _usar_direccion_ocr(self, direccion, cp):
         if direccion and cp:
@@ -932,6 +951,17 @@ class RepartidorApp(App if App is not object else object):
             self.txt_busqueda.text = ''
 
     def _validar_y_anadir(self, texto, origen):
+        # Verificar límite de versión prueba antes de añadir
+        if self._es_cuenta_trial() and len(self.lista_paradas) >= auth.TRIAL_MAX_PARADAS:
+            self._set_estado(
+                f'⚠ Versión prueba: máximo {auth.TRIAL_MAX_PARADAS} paradas. '
+                'Hazte con la versión completa para añadir más.'
+            )
+            if Clock:
+                Clock.schedule_once(self._mostrar_donacion, 0.1)
+            else:
+                self._mostrar_donacion()
+            return False
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
         parada, error = repartidor.iniciar_alta_parada(
             self.lista_paradas,
@@ -952,6 +982,12 @@ class RepartidorApp(App if App is not object else object):
             lambda: self._geocodificar_parada(parada, origen)
         )
         return True
+
+    def _es_cuenta_trial(self):
+        """Devuelve True si el usuario actual tiene cuenta de prueba."""
+        if not self._usuario_actual:
+            return False
+        return auth.is_trial(self.user_data_dir, self._usuario_actual)
 
     def _geocodificar_parada(self, parada, origen):
         resultado, detalle = repartidor.resolver_geocodificacion(
