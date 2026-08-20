@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover
 
 import repartidor
 import android_services
+import auth
 
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
@@ -83,6 +84,9 @@ class RepartidorApp(App if App is not object else object):
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
         self._open_map_when_located = False
+        # Autenticación
+        self._usuario_actual = None
+        self._popup_auth = None
 
     # ------------------------------------------------------------------
     # Build UI
@@ -196,11 +200,271 @@ class RepartidorApp(App if App is not object else object):
 
         self._programar_reloj_19()
         if Clock:
-            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.5)
+            Clock.schedule_once(self._mostrar_login, 0.3)
         else:
-            self._solicitar_ubicacion_inicial()
+            self._mostrar_login()
 
         return root
+
+    # ------------------------------------------------------------------
+    # Autenticación – login / registro / donación
+    # ------------------------------------------------------------------
+    def _mostrar_login(self, *_args):
+        """Muestra el popup de inicio de sesión al arrancar la app."""
+        if Popup is object:
+            # Entorno sin Kivy: no bloqueamos la app
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text='🚚 App Repartidor\nInicia sesión para continuar',
+            halign='center',
+            font_size='16sp',
+            size_hint_y=None,
+            height='60dp',
+        ))
+        txt_user = TextInput(
+            hint_text='Usuario',
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass = TextInput(
+            hint_text='Contraseña',
+            ******
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        lbl_error = Label(
+            text='',
+            color=(1, 0.3, 0.3, 1),
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        )
+        contenido.add_widget(txt_user)
+        contenido.add_widget(txt_pass)
+        contenido.add_widget(lbl_error)
+
+        btn_entrar = Button(
+            text='Entrar',
+            size_hint_y=None,
+            height='48dp',
+            background_color=(0.2, 0.6, 0.9, 1),
+        )
+        btn_registrar = Button(
+            text='Crear cuenta nueva',
+            size_hint_y=None,
+            height='44dp',
+            background_color=(0.2, 0.7, 0.3, 1),
+        )
+        contenido.add_widget(btn_entrar)
+        contenido.add_widget(btn_registrar)
+
+        popup = Popup(
+            title='Iniciar sesión',
+            content=contenido,
+            size_hint=(0.9, None),
+            height='420dp',
+            auto_dismiss=False,
+        )
+        self._popup_auth = popup
+
+        def _login(*_):
+            usuario = txt_user.text.strip()
+            contrasena = txt_pass.text
+            if not usuario or not contrasena:
+                lbl_error.text = 'Rellena usuario y contraseña.'
+                return
+            if auth.verify_user(self.user_data_dir, usuario, contrasena):
+                self._usuario_actual = usuario
+                popup.dismiss()
+                self._popup_auth = None
+                tipo = auth.get_account_type(self.user_data_dir, usuario)
+                if tipo == auth.ACCOUNT_TRIAL:
+                    self._set_estado(
+                        f'Bienvenido, {usuario} 👋  '
+                        f'(Versión prueba: máx. {auth.TRIAL_MAX_PARADAS} paradas)'
+                    )
+                else:
+                    self._set_estado(f'Bienvenido, {usuario} 👋  (Versión completa ✅)')
+                if Clock:
+                    Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+                else:
+                    self._solicitar_ubicacion_inicial()
+            else:
+                lbl_error.text = 'Usuario o contraseña incorrectos.'
+
+        btn_entrar.bind(on_press=_login)
+        txt_pass.bind(on_text_validate=_login)
+        btn_registrar.bind(on_press=lambda *_: self._mostrar_registro(popup))
+        popup.open()
+
+    def _mostrar_registro(self, popup_login):
+        """Cierra el login y abre el formulario de registro."""
+        popup_login.dismiss()
+        if Popup is object:
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text='Crear cuenta nueva',
+            halign='center',
+            font_size='16sp',
+            size_hint_y=None,
+            height='44dp',
+        ))
+        txt_user = TextInput(
+            hint_text='Nombre de usuario',
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass = TextInput(
+            hint_text='Contraseña',
+            ******
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass2 = TextInput(
+            hint_text='Repite la contraseña',
+            ******
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        lbl_error = Label(
+            text='',
+            color=(1, 0.3, 0.3, 1),
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        )
+        contenido.add_widget(txt_user)
+        contenido.add_widget(txt_pass)
+        contenido.add_widget(txt_pass2)
+        contenido.add_widget(lbl_error)
+
+        fila_btns = BoxLayout(size_hint_y=None, height='48dp', spacing=8)
+        btn_volver = Button(text='← Volver', background_color=(0.5, 0.5, 0.5, 1))
+        btn_crear = Button(text='Crear cuenta', background_color=(0.2, 0.7, 0.3, 1))
+        fila_btns.add_widget(btn_volver)
+        fila_btns.add_widget(btn_crear)
+        contenido.add_widget(fila_btns)
+
+        popup = Popup(
+            title='Registro',
+            content=contenido,
+            size_hint=(0.9, None),
+            height='480dp',
+            auto_dismiss=False,
+        )
+        self._popup_auth = popup
+
+        def _registrar(*_):
+            usuario = txt_user.text.strip()
+            contrasena = txt_pass.text
+            contrasena2 = txt_pass2.text
+            if not usuario or not contrasena:
+                lbl_error.text = 'Rellena todos los campos.'
+                return
+            if contrasena != contrasena2:
+                lbl_error.text = 'Las contraseñas no coinciden.'
+                return
+            try:
+                ok = auth.register_user(self.user_data_dir, usuario, contrasena)
+            except ValueError as exc:
+                lbl_error.text = str(exc)
+                return
+            if not ok:
+                lbl_error.text = 'Ese nombre de usuario ya existe.'
+                return
+            self._usuario_actual = usuario
+            popup.dismiss()
+            self._popup_auth = None
+            self._set_estado(
+                f'¡Cuenta creada! Bienvenido, {usuario} 👋  '
+                f'(Versión prueba: máx. {auth.TRIAL_MAX_PARADAS} paradas)'
+            )
+            if Clock:
+                Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+            else:
+                self._solicitar_ubicacion_inicial()
+
+        btn_crear.bind(on_press=_registrar)
+        btn_volver.bind(on_press=lambda *_: self._reabrir_login(popup))
+        popup.open()
+
+    def _reabrir_login(self, popup_registro):
+        """Cierra el registro y vuelve al login."""
+        popup_registro.dismiss()
+        self._mostrar_login()
+
+    def _mostrar_donacion(self, *_args):
+        """Muestra el popup de donación para desbloquear la versión completa."""
+        if Popup is object:
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text=(
+                '🎁 Versión completa\n\n'
+                'La versión de prueba está limitada a\n'
+                f'{auth.TRIAL_MAX_PARADAS} paradas.\n\n'
+                'Haz una donación para desbloquear\n'
+                'la versión completa sin límites.'
+            ),
+            halign='center',
+            font_size='14sp',
+            size_hint_y=None,
+            height='180dp',
+        ))
+
+        btn_donar = Button(
+            text='☕ Donar y desbloquear',
+            size_hint_y=None,
+            height='52dp',
+            background_color=(0.95, 0.6, 0.1, 1),
+        )
+        btn_cerrar = Button(
+            text='Ahora no',
+            size_hint_y=None,
+            height='44dp',
+            background_color=(0.45, 0.45, 0.45, 1),
+        )
+        contenido.add_widget(btn_donar)
+        contenido.add_widget(btn_cerrar)
+
+        popup = Popup(
+            title='Desbloquear versión completa',
+            content=contenido,
+            size_hint=(0.88, None),
+            height='400dp',
+            auto_dismiss=False,
+        )
+
+        def _abrir_donacion(*_):
+            if android_services.is_android():
+                android_services.open_map_url(auth.DONATION_URL, self._set_estado)
+            else:
+                webbrowser.open(auth.DONATION_URL)
+            # Tras donar el usuario puede pedir al desarrollador que active full
+            popup.dismiss()
+            self._set_estado(
+                '¡Gracias! Una vez confirmada la donación tu cuenta será activada. '
+                'Contacta con soporte si necesitas ayuda.'
+            )
+
+        btn_donar.bind(on_press=_abrir_donacion)
+        btn_cerrar.bind(on_press=lambda *_: popup.dismiss())
+        popup.open()
 
     # ------------------------------------------------------------------
     # Geolocalización
