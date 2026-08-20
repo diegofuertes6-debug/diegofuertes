@@ -19,8 +19,10 @@ users.json
 webServerApiSettings.json
 *.jks
 *.keystore
-*.apk
-*.aab
+bin/**/*.apk
+bin/**/*.aab
+.github/workflows/*.apk
+.github/workflows/*.aab
 build*.log
 build.exit
 dist/
