@@ -50,17 +50,15 @@ def _hash_password_pbkdf2(password, salt_hex=None):
 
 
 def _verify_password(password, stored):
-    """Verify *password* against a stored credential entry.
+    """Verify *password* against a stored PBKDF2 credential entry.
 
-    Supports both the current PBKDF2 format
-    ``{'pbkdf2': str, 'salt': str}`` and the legacy plain SHA-256
-    format ``str``, so existing accounts keep working.
+    Only accepts the current ``{'pbkdf2': str, 'salt': str}`` format.
+    Entries in any other format are rejected as invalid.
     """
-    if isinstance(stored, str):
-        # Legacy SHA-256 (no salt) — still accepted for existing accounts
-        return stored == hashlib.sha256(password.encode('utf-8')).hexdigest()
-    pbkdf2 = stored.get('pbkdf2') if isinstance(stored, dict) else None
-    salt = stored.get('salt') if isinstance(stored, dict) else None
+    if not isinstance(stored, dict):
+        return False
+    pbkdf2 = stored.get('pbkdf2')
+    salt = stored.get('salt')
     if not pbkdf2 or not salt:
         return False
     candidate, _ = _hash_password_pbkdf2(password, salt_hex=salt)
@@ -148,7 +146,7 @@ def get_account_type(data_dir, username):
     username = username.strip()
     users = _load_users(data_dir)
     entry = users.get(username)
-    if entry is None or isinstance(entry, str):
+    if not isinstance(entry, dict):
         return ACCOUNT_TRIAL
     return entry.get('account_type', ACCOUNT_TRIAL)
 
@@ -165,9 +163,8 @@ def upgrade_to_full(data_dir, username):
     if username not in users:
         return False
     entry = users[username]
-    if isinstance(entry, str):
-        # Legacy SHA-256 entry: promote to dict keeping the old hash
-        entry = {'pbkdf2_legacy_sha256': entry}
+    if not isinstance(entry, dict):
+        return False
     entry['account_type'] = ACCOUNT_FULL
     users[username] = entry
     _save_users(data_dir, users)
