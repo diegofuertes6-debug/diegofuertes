@@ -43,11 +43,6 @@ LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
 DEFAULT_LETTER = 'Sin cartas'
 
 try:
-    from dotenv import load_dotenv
-except ImportError:
-    load_dotenv = None
-
-try:
     import requests
 except ImportError:
     requests = None
@@ -312,39 +307,39 @@ def extraer_candidatos_direccion_ocr(texto):
     )
 
 
-def cargar_api_key():
-    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+def _sanitize_api_key(value):
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
+    if not value or value == 'TU_API_KEY_AQUÍ':
+        return ''
+    return value
 
-    if load_dotenv is not None and os.path.exists(dotenv_path):
-        try:
-            load_dotenv(dotenv_path=dotenv_path, override=False)
-        except Exception as exc:
-            print(f'No se pudo cargar .env: {exc}')
-    elif os.path.exists(dotenv_path):
-        with open(dotenv_path, encoding='utf-8') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key == API_KEY_ENV_VAR and value and value != 'TU_API_KEY_AQUÍ':
-                    return value
 
-    api_key = os.getenv(API_KEY_ENV_VAR, '').strip()
-    if api_key and api_key != 'TU_API_KEY_AQUÍ':
-        return api_key
-
+def _cargar_api_key_legacy_json():
     settings_path = os.path.join(os.path.dirname(__file__), 'webServerApiSettings.json')
     data = _safe_read_json(settings_path)
-    if isinstance(data, dict):
-        for key in API_KEY_CANDIDATES:
-            value = data.get(key)
-            if isinstance(value, str) and value.strip() and value.strip() != 'TU_API_KEY_AQUÍ':
-                return value.strip()
-
+    if not isinstance(data, dict):
+        return ''
+    for key in API_KEY_CANDIDATES:
+        value = _sanitize_api_key(data.get(key))
+        if value:
+            return value
     return ''
+
+
+def cargar_api_key():
+    api_key = _sanitize_api_key(os.getenv(API_KEY_ENV_VAR, ''))
+    if api_key:
+        return api_key
+
+    api_key = _cargar_api_key_legacy_json()
+    if api_key:
+        print(
+            'Usando webServerApiSettings.json como compatibilidad temporal; '
+            f'configura {API_KEY_ENV_VAR} mediante variables de entorno o GitHub Secrets.'
+        )
+    return api_key
 
 
 API_KEY = cargar_api_key()

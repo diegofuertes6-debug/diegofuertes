@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import webbrowser
@@ -34,8 +33,6 @@ except ImportError:  # pragma: no cover
 import repartidor
 import android_services
 
-CONFIG_FILE = 'webServerApiSettings.json'
-
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_CARTAS = 'Cartas'
@@ -50,10 +47,6 @@ def _project_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _config_path():
-    return os.path.join(_project_dir(), CONFIG_FILE)
-
-
 def _hora_actual():
     """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
     from datetime import datetime
@@ -64,7 +57,7 @@ class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lista_paradas = []
-        self.api_key = repartidor.API_KEY or self._cargar_api_key_legacy()
+        self.api_key = repartidor.API_KEY
         self.lbl_estado = None
         self.btn_ruta = None
         self.lista_widget = None
@@ -89,21 +82,6 @@ class RepartidorApp(App if App is not object else object):
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
         self._open_map_when_located = False
-
-    # ------------------------------------------------------------------
-    # Legacy API key loader (compatible con el JSON existente)
-    # ------------------------------------------------------------------
-    def _cargar_api_key_legacy(self):
-        config_path = _config_path()
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict):
-                    return str(data.get('googleMapsApiKey', '') or '')
-            except (OSError, ValueError):
-                pass
-        return ''
 
     # ------------------------------------------------------------------
     # Build UI

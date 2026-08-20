@@ -905,6 +905,33 @@ class BuscarDireccionTests(unittest.TestCase):
         self.assertIsNone(parada)
 
 
+class ApiKeyLoadingTests(unittest.TestCase):
+    def test_cargar_api_key_prioriza_variable_entorno(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {repartidor.API_KEY_ENV_VAR: 'ENV_KEY'},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "JSON_KEY"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), 'ENV_KEY')
+
+    def test_cargar_api_key_fallback_json_legacy_si_entorno_no_vale(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {repartidor.API_KEY_ENV_VAR: 'TU_API_KEY_AQUÍ'},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "JSON_KEY"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), 'JSON_KEY')
+
+    def test_repartidor_app_usa_api_key_resuelta_sin_recargar_archivos_locales(self):
+        with patch('main.repartidor.API_KEY', 'ENV_KEY'):
+            app = main.RepartidorApp()
+        self.assertEqual(app.api_key, 'ENV_KEY')
+
+
 class ReglaHoraria19Tests(unittest.TestCase):
     """Pruebas específicas para la regla de priorización a las 19:00."""
 
