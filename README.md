@@ -25,25 +25,82 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 ## Configuración de la API key de Google Maps
 
-1. Crea (o edita) el archivo `webServerApiSettings.json` en la raíz del proyecto:
+### 1. Obtener la API key en Google Cloud
 
-   ```json
-   {
-     "googleMapsApiKey": "TU_API_KEY_AQUÍ"
-   }
-   ```
+1. Ve a [Google Cloud Console → Credenciales](https://console.cloud.google.com/apis/credentials).
+2. Crea un proyecto nuevo o selecciona uno existente.
+3. Habilita las APIs necesarias:
+   - **Geocoding API**
+   - **Maps JavaScript API**
+4. Pulsa **Crear credencial → Clave de API** y copia la clave (empieza por `AIza…`).
 
-2. Alternativamente, define la variable de entorno `GOOGLE_MAPS_API_KEY` o añade la clave en un archivo `.env`:
+### 2. Configurar la clave (elige una opción)
 
-   ```
-   GOOGLE_MAPS_API_KEY=TU_API_KEY_AQUÍ
-   ```
+#### Opción 1 — Archivo `.env` *(recomendada para desarrollo local)*
 
-3. La API key debe tener habilitadas las APIs **Geocoding** y **Maps JavaScript**.
+```bash
+cp .env.example .env          # crea tu .env personal
+# edita .env y reemplaza TU_API_KEY_AQUÍ por tu clave real
+```
 
-> **Nota**: sin API key la app no puede hacer elegible una dirección para la
-> ruta. La parada muestra error de geolocalización y permite corregir o
-> reintentar; nunca se inventan coordenadas.
+El archivo `.env` está en `.gitignore` y **nunca se sube al repositorio**.
+
+#### Opción 2 — Variable de entorno *(recomendada para CI/CD o despliegue)*
+
+```bash
+# Linux / macOS
+export GOOGLE_MAPS_API_KEY="AIzaSy..."
+python main.py
+
+# Windows (PowerShell)
+$env:GOOGLE_MAPS_API_KEY="AIzaSy..."
+python main.py
+```
+
+#### Opción 3 — `webServerApiSettings.json` *(compatibilidad con versiones anteriores)*
+
+Crea el archivo en la raíz del proyecto:
+
+```json
+{
+  "googleMapsApiKey": "AIzaSy..."
+}
+```
+
+Este archivo también está en `.gitignore`.
+
+### 3. Verificar que la clave se carga correctamente
+
+```bash
+python -c "import repartidor; k = repartidor.API_KEY; print('OK:', k[:10]+'...' if k else 'NO CONFIGURADA')"
+```
+
+Deberías ver: `OK: AIzaSy...`
+
+> **⚠️ Importante**: la API key **nunca** debe escribirse directamente en el
+> código ni subirse al repositorio. Usa siempre una de las tres opciones
+> anteriores.
+
+### 4. APIs requeridas
+
+La clave debe tener habilitadas:
+- **Geocoding API** — convierte direcciones en coordenadas.
+- **Maps JavaScript API** — abre Google Maps desde la app.
+
+> **Nota**: sin API key la app no puede geocodificar direcciones. Las paradas
+> muestran error de geolocalización y permiten corregir o reintentar; nunca se
+> inventan coordenadas.
+
+---
+
+## Troubleshooting: Google Maps no se inicia
+
+| Síntoma | Causa probable | Solución |
+|---|---|---|
+| `No hay API key configurada` | Ninguna de las 3 opciones configurada | Seguir los pasos anteriores |
+| `REQUEST_DENIED` de la API | Clave incorrecta o APIs no habilitadas | Verificar en Google Cloud Console |
+| `OVER_QUERY_LIMIT` | Cuota diaria superada | Revisar límites en Google Cloud |
+| Coordenadas siempre `None` | Dirección inválida o sin CP | Introducir dirección con código postal |
 
 ---
 
