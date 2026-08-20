@@ -945,7 +945,7 @@ class ApiKeyLoadingTests(unittest.TestCase):
             self.assertEqual(repartidor.cargar_api_key(), '')
 
     def test_repartidor_app_usa_api_key_resuelta_sin_recargar_archivos_locales(self):
-        with patch('main.repartidor.API_KEY', 'ENV_KEY'):
+        with patch.object(repartidor, 'API_KEY', 'ENV_KEY'):
             app = main.RepartidorApp()
             self.assertEqual(app.api_key, 'ENV_KEY')
 
