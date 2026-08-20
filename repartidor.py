@@ -337,7 +337,7 @@ def cargar_api_key():
     if api_key:
         print(
             'Usando webServerApiSettings.json como compatibilidad temporal; '
-            f'configura {API_KEY_ENV_VAR} mediante variables de entorno o GitHub Secrets.'
+            'configura la clave mediante variables de entorno o GitHub Secrets.'
         )
     return api_key
 
