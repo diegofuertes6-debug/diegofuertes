@@ -774,12 +774,13 @@ class RepartidorApp(App if App is not object else object):
         self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
 
     def _abrir_maps_ubicacion(self, lat, lng):
-        """Abre Google Maps centrado en las coordenadas dadas."""
+        """Abre Google Maps centrado en las coordenadas dadas.
+
+        Delega en ``android_services.open_map_url`` que maneja tanto el intent
+        de Android como el fallback al navegador en escritorio.
+        """
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
-        if android_services.is_android():
-            android_services.open_map_url(url, lambda _: webbrowser.open(url))
-        else:
-            self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
+        android_services.open_map_url(url, self._set_estado)
 
     def _usar_direccion_ocr(self, direccion, cp):
         if direccion and cp:

@@ -2,7 +2,8 @@
 
 Las cuentas se almacenan en un fichero JSON (``users.json``) dentro del
 directorio de datos de la aplicación.  Las contraseñas se guardan como
-hash SHA-256 para no almacenarlas en claro.
+hash PBKDF2-HMAC-SHA256 con sal aleatoria por usuario, lo que las protege
+frente a ataques de diccionario y tablas rainbow.
 
 Tipos de cuenta
 ---------------
@@ -13,6 +14,7 @@ Tipos de cuenta
 import hashlib
 import json
 import os
+import secrets
 
 _USERS_FILENAME = 'users.json'
 
@@ -22,13 +24,47 @@ DONATION_URL = 'https://www.buymeacoffee.com/repartidorapp'
 ACCOUNT_TRIAL = 'trial'
 ACCOUNT_FULL = 'full'
 
+# PBKDF2 parameters
+_PBKDF2_ITERATIONS = 260_000
+_PBKDF2_HASH = 'sha256'
+_SALT_BYTES = 32
+
 
 def _users_path(data_dir):
     return os.path.join(data_dir, _USERS_FILENAME)
 
 
-def _hash_password(password):
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+def _hash_password_pbkdf2(password, salt_hex=None):
+    """Returns ``(hash_hex, salt_hex)`` using PBKDF2-HMAC-SHA256."""
+    if salt_hex is None:
+        salt = secrets.token_bytes(_SALT_BYTES)
+    else:
+        salt = bytes.fromhex(salt_hex)
+    dk = hashlib.pbkdf2_hmac(
+        _PBKDF2_HASH,
+        password.encode('utf-8'),
+        salt,
+        _PBKDF2_ITERATIONS,
+    )
+    return dk.hex(), salt.hex()
+
+
+def _verify_password(password, stored):
+    """Verify *password* against a stored credential entry.
+
+    Supports both the current PBKDF2 format
+    ``{'pbkdf2': str, 'salt': str}`` and the legacy plain SHA-256
+    format ``str``, so existing accounts keep working.
+    """
+    if isinstance(stored, str):
+        # Legacy SHA-256 (no salt) — still accepted for existing accounts
+        return stored == hashlib.sha256(password.encode('utf-8')).hexdigest()
+    pbkdf2 = stored.get('pbkdf2') if isinstance(stored, dict) else None
+    salt = stored.get('salt') if isinstance(stored, dict) else None
+    if not pbkdf2 or not salt:
+        return False
+    candidate, _ = _hash_password_pbkdf2(password, salt_hex=salt)
+    return secrets.compare_digest(candidate, pbkdf2)
 
 
 def _load_users(data_dir):
@@ -79,8 +115,10 @@ def register_user(data_dir, username, password, account_type=ACCOUNT_TRIAL):
     if username in users:
         return False
 
+    hash_hex, salt_hex = _hash_password_pbkdf2(password)
     users[username] = {
-        'password': _hash_password(password),
+        'pbkdf2': hash_hex,
+        'salt': salt_hex,
         'account_type': account_type,
     }
     _save_users(data_dir, users)
@@ -99,9 +137,7 @@ def verify_user(data_dir, username, password):
     entry = users.get(username)
     if entry is None:
         return False
-    # Soporte para formato antiguo (solo hash como string)
-    stored_hash = entry if isinstance(entry, str) else entry.get('password', '')
-    return stored_hash == _hash_password(password)
+    return _verify_password(password, entry)
 
 
 def get_account_type(data_dir, username):
@@ -130,7 +166,8 @@ def upgrade_to_full(data_dir, username):
         return False
     entry = users[username]
     if isinstance(entry, str):
-        entry = {'password': entry}
+        # Legacy SHA-256 entry: promote to dict keeping the old hash
+        entry = {'pbkdf2_legacy_sha256': entry}
     entry['account_type'] = ACCOUNT_FULL
     users[username] = entry
     _save_users(data_dir, users)
