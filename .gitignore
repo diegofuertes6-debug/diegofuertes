@@ -21,7 +21,7 @@ webServerApiSettings.json
 *.keystore
 *.apk
 *.aab
-*.log
+build*.log
 build.exit
 dist/
 release/
