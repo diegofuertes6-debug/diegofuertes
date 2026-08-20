@@ -312,38 +312,66 @@ def extraer_candidatos_direccion_ocr(texto):
     )
 
 
+_PLACEHOLDER_VALUES = {'TU_API_KEY_AQUÍ', 'YOUR_API_KEY_HERE', ''}
+
+
+def _es_key_valida(value):
+    """Devuelve True si *value* parece una API key real (no vacía ni placeholder)."""
+    return bool(value and value.strip() and value.strip() not in _PLACEHOLDER_VALUES)
+
+
 def cargar_api_key():
+    """Carga la API key de Google Maps desde múltiples fuentes en orden de prioridad:
+
+    1. Archivo ``.env`` en el directorio raíz del proyecto.
+    2. Variable de entorno ``GOOGLE_MAPS_API_KEY``.
+    3. Archivo ``webServerApiSettings.json`` en la raíz del proyecto.
+
+    Si no se encuentra ninguna key válida, devuelve '' y emite una advertencia
+    con instrucciones para configurarla.
+    """
     dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 
     if load_dotenv is not None and os.path.exists(dotenv_path):
         try:
             load_dotenv(dotenv_path=dotenv_path, override=False)
         except Exception as exc:
-            print(f'No se pudo cargar .env: {exc}')
+            print(f'[repartidor] Advertencia: no se pudo cargar .env: {exc}')
     elif os.path.exists(dotenv_path):
-        with open(dotenv_path, encoding='utf-8') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key == API_KEY_ENV_VAR and value and value != 'TU_API_KEY_AQUÍ':
-                    return value
+        try:
+            with open(dotenv_path, encoding='utf-8') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k == API_KEY_ENV_VAR and _es_key_valida(v):
+                        return v
+        except OSError as exc:
+            print(f'[repartidor] Advertencia: no se pudo leer .env: {exc}')
 
     api_key = os.getenv(API_KEY_ENV_VAR, '').strip()
-    if api_key and api_key != 'TU_API_KEY_AQUÍ':
+    if _es_key_valida(api_key):
         return api_key
 
     settings_path = os.path.join(os.path.dirname(__file__), 'webServerApiSettings.json')
     data = _safe_read_json(settings_path)
     if isinstance(data, dict):
-        for key in API_KEY_CANDIDATES:
-            value = data.get(key)
-            if isinstance(value, str) and value.strip() and value.strip() != 'TU_API_KEY_AQUÍ':
+        for candidate in API_KEY_CANDIDATES:
+            value = data.get(candidate)
+            if isinstance(value, str) and _es_key_valida(value):
                 return value.strip()
 
+    print(
+        '[repartidor] AVISO: No se encontró la API key de Google Maps.\n'
+        '  Para configurarla, elige una de estas opciones:\n'
+        '  1. Crea un archivo .env con: GOOGLE_MAPS_API_KEY=TU_CLAVE\n'
+        '  2. Define la variable de entorno: export GOOGLE_MAPS_API_KEY=TU_CLAVE\n'
+        '  3. Crea webServerApiSettings.json con: {"googleMapsApiKey": "TU_CLAVE"}\n'
+        '  Sin API key la geocodificación no estará disponible.'
+    )
     return ''
 
 
@@ -361,7 +389,7 @@ def obtener_coordenadas(direccion, cp):
         return None
 
     if not API_KEY:
-        print('No hay API key configurada; se omite la geocodificación.')
+        print('[repartidor] API key no configurada; se omite la geocodificación. Consulta .env.example para instrucciones.')
         return None
 
     full_address = f'{direccion}, {cp}, España'
@@ -779,7 +807,7 @@ def buscar_direccion_texto(texto):
         print('requests no está instalado.')
         return None
     if not API_KEY:
-        print('No hay API key configurada; se omite la geocodificación.')
+        print('[repartidor] API key no configurada; se omite la geocodificación. Consulta .env.example para instrucciones.')
         return None
 
     url = 'https://maps.googleapis.com/maps/api/geocode/json'

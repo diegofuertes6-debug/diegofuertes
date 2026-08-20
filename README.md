@@ -25,25 +25,78 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 ## Configuración de la API key de Google Maps
 
-1. Crea (o edita) el archivo `webServerApiSettings.json` en la raíz del proyecto:
+La app carga la API key automáticamente desde estas fuentes (en orden de prioridad):
 
-   ```json
-   {
-     "googleMapsApiKey": "TU_API_KEY_AQUÍ"
-   }
-   ```
+### Opción 1 — Archivo `.env` (recomendado para desarrollo local)
 
-2. Alternativamente, define la variable de entorno `GOOGLE_MAPS_API_KEY` o añade la clave en un archivo `.env`:
+Copia el archivo de ejemplo y rellena tu clave:
 
-   ```
-   GOOGLE_MAPS_API_KEY=TU_API_KEY_AQUÍ
-   ```
+```bash
+cp .env.example .env
+# Edita .env y sustituye TU_API_KEY_AQUÍ por tu clave real
+```
 
-3. La API key debe tener habilitadas las APIs **Geocoding** y **Maps JavaScript**.
+El archivo `.env` **nunca** se sube al repositorio (está en `.gitignore`).
 
-> **Nota**: sin API key la app no puede hacer elegible una dirección para la
-> ruta. La parada muestra error de geolocalización y permite corregir o
+### Opción 2 — Variable de entorno
+
+```bash
+# Linux / macOS
+export GOOGLE_MAPS_API_KEY="AIzaSy..."
+python main.py
+
+# Windows PowerShell
+$env:GOOGLE_MAPS_API_KEY="AIzaSy..."
+python main.py
+```
+
+### Opción 3 — `webServerApiSettings.json` (legacy)
+
+Crea `webServerApiSettings.json` en la raíz del proyecto:
+
+```json
+{
+  "googleMapsApiKey": "AIzaSy..."
+}
+```
+
+Este archivo también está en `.gitignore` y no debe subirse al repositorio.
+
+### Obtener una API key
+
+1. Ve a [Google Cloud Console](https://console.cloud.google.com/).
+2. Crea un proyecto (o selecciona uno existente).
+3. Activa las APIs: **Geocoding API** y **Maps JavaScript API**.
+4. Ve a **Credenciales → Crear credencial → Clave de API**.
+5. Copia la clave (comienza con `AIza...`).
+
+> **Nota**: sin API key la app no puede geocodificar direcciones.
+> La parada muestra un error de geolocalización y permite corregir o
 > reintentar; nunca se inventan coordenadas.
+
+---
+
+## Solución de problemas (Troubleshooting)
+
+### Google Maps no se inicia / no hay coordenadas
+
+**Síntoma**: la app muestra `API key no configurada` en los logs o las
+paradas no obtienen coordenadas.
+
+**Causa**: ninguna de las tres fuentes de configuración tiene una key válida.
+
+**Solución**:
+
+1. Verifica que la key esté configurada:
+
+   ```bash
+   python -c "import repartidor; print('API_KEY:', repartidor.API_KEY[:10] + '...' if repartidor.API_KEY else 'NO CONFIGURADA')"
+   ```
+
+2. Si muestra `NO CONFIGURADA`, sigue los pasos de la sección anterior.
+
+3. Asegúrate de que la key tiene habilitadas las APIs **Geocoding API** y
+   **Maps JavaScript API** en Google Cloud Console.
 
 ---
 
