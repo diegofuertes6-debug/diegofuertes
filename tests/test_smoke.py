@@ -947,7 +947,7 @@ class ApiKeyLoadingTests(unittest.TestCase):
     def test_repartidor_app_usa_api_key_resuelta_sin_recargar_archivos_locales(self):
         with patch('main.repartidor.API_KEY', 'ENV_KEY'):
             app = main.RepartidorApp()
-        self.assertEqual(app.api_key, 'ENV_KEY')
+            self.assertEqual(app.api_key, 'ENV_KEY')
 
 
 class ReglaHoraria19Tests(unittest.TestCase):
