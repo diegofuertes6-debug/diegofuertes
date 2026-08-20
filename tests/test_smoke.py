@@ -926,6 +926,24 @@ class ApiKeyLoadingTests(unittest.TestCase):
             legacy_path.write_text('{"googleMapsApiKey": "JSON_KEY"}', encoding='utf-8')
             self.assertEqual(repartidor.cargar_api_key(), 'JSON_KEY')
 
+    def test_cargar_api_key_devuelve_vacia_sin_env_ni_json_valido(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            self.assertEqual(repartidor.cargar_api_key(), '')
+
+    def test_cargar_api_key_ignora_placeholder_en_json_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "TU_API_KEY_AQUÍ"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), '')
+
     def test_repartidor_app_usa_api_key_resuelta_sin_recargar_archivos_locales(self):
         with patch('main.repartidor.API_KEY', 'ENV_KEY'):
             app = main.RepartidorApp()

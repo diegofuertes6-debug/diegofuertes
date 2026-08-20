@@ -18,6 +18,11 @@ jobs:
         shell: bash
         run: |
           set -e
+          if [ ! -d bin ]; then
+            echo "No existe el directorio bin/"
+            exit 1
+          fi
+
           source_apk="$(find bin -type f -name '*.apk' -print -quit)"
 
           if [ -z "$source_apk" ]; then
