@@ -11,6 +11,8 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
   - 🎙 Micrófono: dicta la dirección por voz (speech-to-text), revisa el texto
     reconocido y confírmalo antes de añadir.
   - 🔍 Búsqueda manual: escribe la dirección y pulsa la lupa o Enter.
+  - Las tres opciones se agrupan en un único botón integrado situado debajo de
+    **🗺 VER RUTA EN MAPS**.
   Los tres canales comparten validación, geocodificación y detección de
   duplicados, y siempre muestran si la parada se añadió o por qué se rechazó.
 - **Prioridades**: asigna alta (roja), media (naranja) o baja (verde).
@@ -74,7 +76,7 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 ## Uso de cámara y micrófono
 
 ### Cámara
-- Pulsa el único botón de escáner **📷**.
+- Pulsa el botón integrado de añadir parada y elige **📷 Escáner**.
 - En Android abre la cámara nativa y procesa la foto localmente con ML Kit.
 - Revisa la dirección propuesta. Si hay varios candidatos, selecciónala en la
   lista; también puedes editar el texto antes de pulsar **Añadir parada**.
@@ -83,7 +85,7 @@ del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
 - El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
 
 ### Micrófono
-- Pulsa el único botón de voz **🎙**.
+- Pulsa el botón integrado de añadir parada y elige **🎙 Micrófono**.
 - En Android lanza el intent `ACTION_RECOGNIZE_SPEECH` del sistema.
 - Revisa o corrige el texto reconocido y pulsa **Añadir parada**.
 - En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.

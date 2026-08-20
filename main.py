@@ -42,6 +42,7 @@ STOP_ACTIONS = (
     ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
     ('escaner', '📷', 'Escáner', 'Escanear, revisar y añadir dirección', 'escanear_camara'),
 )
+INTEGRATED_STOP_BUTTON_TEXT = '➕ AÑADIR PARADA\n📷 Escáner · 🔍 Lupa · 🎙 Micrófono'
 
 
 def _project_dir():
@@ -62,6 +63,7 @@ class RepartidorApp(App if App is not object else object):
         self.api_key = repartidor.API_KEY
         self.lbl_estado = None
         self.btn_ruta = None
+        self.btn_acciones_parada = None
         self.lista_widget = None
         self.spinner_modo = None
         self.spinner_prioridad = None
@@ -73,6 +75,7 @@ class RepartidorApp(App if App is not object else object):
         self._notificacion = repartidor.DEFAULT_LETTER
         self._clock_19 = None
         self._popup_confirmacion = None
+        self._popup_acciones_parada = None
         self._temp_scan_path = None
         self._camera_en_curso = False
         self._location_permission_requested = False
@@ -107,37 +110,12 @@ class RepartidorApp(App if App is not object else object):
         )
         root.add_widget(self.lbl_estado)
 
-        # ---- Alta de parada: un campo y exactamente tres acciones ----
-        fila_buscar = BoxLayout(size_hint_y=None, height='64dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
             multiline=False,
-            size_hint_x=1,
             padding=(10, 18),
         )
         self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
-        fila_buscar.add_widget(self.txt_busqueda)
-        colores = (
-            (0.95, 0.55, 0.1, 1),
-            (0.2, 0.7, 0.3, 1),
-            (0.1, 0.6, 0.9, 1),
-        )
-        for (_identificador, icono, texto, etiqueta, handler), color in zip(
-            STOP_ACTIONS, colores
-        ):
-            boton = Button(
-                text=f'{icono}\n{texto}',
-                size_hint_x=None,
-                width='60dp',
-                font_size='14sp',
-                background_normal='',
-                background_color=color,
-            )
-            boton.tooltip_text = etiqueta
-            boton.accessibility_label = etiqueta
-            boton.bind(on_press=getattr(self, handler))
-            fila_buscar.add_widget(boton)
-        root.add_widget(fila_buscar)
 
         # ---- Selección prioridad y modo transporte ----
         fila_opts = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
@@ -197,6 +175,18 @@ class RepartidorApp(App if App is not object else object):
         )
         self.btn_ruta.bind(on_press=self.abrir_google_maps)
         root.add_widget(self.btn_ruta)
+
+        # ---- Botón integrado de alta de parada ----
+        self.btn_acciones_parada = Button(
+            text=INTEGRATED_STOP_BUTTON_TEXT,
+            size_hint_y=None,
+            height='72dp',
+            font_size='16sp',
+            background_normal='',
+            background_color=(0.15, 0.45, 0.85, 1),
+        )
+        self.btn_acciones_parada.bind(on_press=self.mostrar_acciones_parada)
+        root.add_widget(self.btn_acciones_parada)
 
         self._programar_reloj_19()
         if Clock:
@@ -654,6 +644,99 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     # Entrada de paradas
     # ------------------------------------------------------------------
+    def mostrar_acciones_parada(self, *_args):
+        if Popup is object:
+            self._set_estado(
+                'Usa el botón integrado de la app para abrir cámara, lupa o micrófono.'
+            )
+            return
+
+        if self._popup_acciones_parada is not None:
+            self._popup_acciones_parada.dismiss()
+            self._popup_acciones_parada = None
+
+        contenido = BoxLayout(orientation='vertical', padding=12, spacing=10)
+        contenido.add_widget(Label(
+            text='Elige cómo añadir la parada',
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        ))
+        entrada = TextInput(
+            text=(self.txt_busqueda.text or '') if self.txt_busqueda else '',
+            hint_text='Escribir dirección…',
+            multiline=False,
+            size_hint_y=None,
+            height='52dp',
+            padding=(10, 13),
+        )
+        contenido.add_widget(entrada)
+
+        acciones_manual = BoxLayout(size_hint_y=None, height='52dp', spacing=8)
+        btn_lupa = Button(
+            text='🔍 Añadir parada',
+            background_normal='',
+            background_color=(0.95, 0.55, 0.1, 1),
+        )
+        btn_lupa.bind(
+            on_press=lambda *_args: self._buscar_manual_desde_popup(
+                self._popup_acciones_parada, entrada
+            )
+        )
+        acciones_manual.add_widget(btn_lupa)
+        contenido.add_widget(acciones_manual)
+
+        acciones = BoxLayout(size_hint_y=None, height='56dp', spacing=8)
+        for texto, color, accion in (
+            ('🎙 Micrófono', (0.2, 0.7, 0.3, 1), self.dictar_microfono),
+            ('📷 Escáner', (0.1, 0.6, 0.9, 1), self.escanear_camara),
+        ):
+            boton = Button(
+                text=texto,
+                background_normal='',
+                background_color=color,
+            )
+            boton.bind(
+                on_press=lambda *_args, handler=accion: self._ejecutar_accion_integrada(
+                    self._popup_acciones_parada, handler
+                )
+            )
+            acciones.add_widget(boton)
+        contenido.add_widget(acciones)
+
+        cerrar = Button(text='Cerrar', size_hint_y=None, height='48dp')
+        contenido.add_widget(cerrar)
+        popup = Popup(
+            title='Añadir parada',
+            content=contenido,
+            size_hint=(0.92, None),
+            height='320dp',
+            auto_dismiss=False,
+        )
+        self._popup_acciones_parada = popup
+        cerrar.bind(on_press=lambda *_args: self._cerrar_popup_acciones_parada(popup))
+        entrada.bind(
+            on_text_validate=lambda *_args: self._buscar_manual_desde_popup(
+                popup, entrada
+            )
+        )
+        popup.open()
+
+    def _cerrar_popup_acciones_parada(self, popup):
+        popup.dismiss()
+        if self._popup_acciones_parada is popup:
+            self._popup_acciones_parada = None
+
+    def _ejecutar_accion_integrada(self, popup, accion):
+        self._cerrar_popup_acciones_parada(popup)
+        accion()
+
+    def _buscar_manual_desde_popup(self, popup, entrada, *_args):
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = entrada.text
+        if self.buscar_manual():
+            self._cerrar_popup_acciones_parada(popup)
+
     def escanear_camara(self, *_args):
         """Take a photo and propose its OCR address for confirmation."""
         if android_services.is_android():
@@ -836,9 +919,11 @@ class RepartidorApp(App if App is not object else object):
         texto = (self.txt_busqueda.text or '').strip() if self.txt_busqueda else ''
         if not texto:
             self._set_estado('Escribe una dirección primero.')
-            return
-        if self._validar_y_anadir(texto, 'búsqueda') and self.txt_busqueda:
+            return False
+        resultado = self._validar_y_anadir(texto, 'búsqueda')
+        if resultado and self.txt_busqueda:
             self.txt_busqueda.text = ''
+        return bool(resultado)
 
     # ------------------------------------------------------------------
     # Geocodificación y gestión de paradas
@@ -1226,6 +1311,9 @@ class RepartidorApp(App if App is not object else object):
         if self._popup_confirmacion is not None:
             self._popup_confirmacion.dismiss()
             self._popup_confirmacion = None
+        if self._popup_acciones_parada is not None:
+            self._popup_acciones_parada.dismiss()
+            self._popup_acciones_parada = None
         if self._temp_scan_path:
             self._eliminar_temporal(self._temp_scan_path)
             self._temp_scan_path = None

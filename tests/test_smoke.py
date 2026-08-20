@@ -615,11 +615,18 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app = self._app()
         app.txt_busqueda.text = 'Calle Serrano 12'
         app._validar_y_anadir = MagicMock(return_value=True)
-        app.buscar_manual()
+        resultado = app.buscar_manual()
         app._validar_y_anadir.assert_called_once_with(
             'Calle Serrano 12', 'búsqueda'
         )
         self.assertEqual(app.txt_busqueda.text, '')
+        self.assertTrue(resultado)
+
+    def test_busqueda_manual_vacia_devuelve_false(self):
+        app = self._app()
+        resultado = app.buscar_manual()
+        self.assertFalse(resultado)
+        self.assertIn('Escribe una dirección', app.lbl_estado.text)
 
     def test_exactamente_tres_acciones_unicas_y_accesibles(self):
         self.assertEqual(len(main.STOP_ACTIONS), 3)
@@ -640,6 +647,33 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             {'buscar_manual', 'dictar_microfono', 'escanear_camara'},
         )
         self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
+        self.assertIn('📷', main.INTEGRATED_STOP_BUTTON_TEXT)
+        self.assertIn('🔍', main.INTEGRATED_STOP_BUTTON_TEXT)
+        self.assertIn('🎙', main.INTEGRATED_STOP_BUTTON_TEXT)
+
+    def test_busqueda_manual_desde_popup_cierra_selector_al_anadir(self):
+        app = self._app()
+        popup = types.SimpleNamespace(dismiss=MagicMock())
+        app._popup_acciones_parada = popup
+        app._validar_y_anadir = MagicMock(return_value=True)
+
+        app._buscar_manual_desde_popup(popup, types.SimpleNamespace(text='Calle Sol 8'))
+
+        app._validar_y_anadir.assert_called_once_with('Calle Sol 8', 'búsqueda')
+        popup.dismiss.assert_called_once_with()
+        self.assertIsNone(app._popup_acciones_parada)
+
+    def test_accion_integrada_cierra_popup_y_lanza_handler(self):
+        app = self._app()
+        popup = types.SimpleNamespace(dismiss=MagicMock())
+        app._popup_acciones_parada = popup
+        accion = MagicMock()
+
+        app._ejecutar_accion_integrada(popup, accion)
+
+        popup.dismiss.assert_called_once_with()
+        accion.assert_called_once_with()
+        self.assertIsNone(app._popup_acciones_parada)
 
     @patch('main.repartidor.buscar_direccion_texto')
     def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
