@@ -23,6 +23,44 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 
 ---
 
+## Instalación y ejecución en escritorio
+
+### Requisitos
+
+- Python 3.10 o superior
+- pip
+
+### Pasos
+
+```bash
+# 1. Clona el repositorio
+git clone https://github.com/diegofuertes6-debug/diegofuertes.git
+cd diegofuertes
+
+# 2. (Recomendado) Crea un entorno virtual
+python -m venv .venv
+source .venv/bin/activate   # Linux / macOS
+.venv\Scripts\activate      # Windows
+
+# 3. Instala dependencias
+pip install kivy requests python-dotenv
+
+# Opcional: OCR (cámara en escritorio)
+pip install pytesseract opencv-python
+
+# Opcional: reconocimiento de voz en escritorio
+pip install SpeechRecognition pyaudio
+
+# 4. Configura la API key de Google Maps (ver sección siguiente)
+cp .env.example .env
+# Edita .env y añade tu clave: GOOGLE_MAPS_API_KEY=AIzaSy...
+
+# 5. Ejecuta la app
+python main.py
+```
+
+---
+
 ## Configuración de la API key de Google Maps
 
 La app carga la API key automáticamente desde estas fuentes (en orden de prioridad):
@@ -98,6 +136,16 @@ paradas no obtienen coordenadas.
 3. Asegúrate de que la key tiene habilitadas las APIs **Geocoding API** y
    **Maps JavaScript API** en Google Cloud Console.
 
+### Kivy no arranca en escritorio
+
+Instala los binarios de Kivy para tu sistema operativo siguiendo la
+[guía oficial](https://kivy.org/doc/stable/gettingstarted/installation.html).
+En Linux puede ser necesario:
+
+```bash
+sudo apt-get install libgl1-mesa-dev libgles2-mesa-dev
+```
+
 ---
 
 ## Permisos necesarios
@@ -171,6 +219,26 @@ El recálculo se dispara automáticamente:
 
 ---
 
+## Estructura del proyecto
+
+```
+diegofuertes/
+├── main.py                   # Aplicación Kivy (UI principal)
+├── repartidor.py             # Lógica de negocio: geocodificación, rutas, prioridades
+├── android_services.py       # Servicios Android (cámara, micrófono, ubicación)
+├── p4a_hook.py               # Hook de python-for-android
+├── buildozer.spec            # Configuración de compilación APK
+├── .env.example              # Plantilla de configuración (copiar a .env)
+├── android_resources/        # Recursos XML de Android (FileProvider, etc.)
+├── tests/
+│   └── test_smoke.py         # Suite de pruebas unitarias
+└── .github/
+    └── workflows/
+        └── android-apk.yml   # CI: compila APK debug en GitHub Actions
+```
+
+---
+
 ## Compilar APK
 
 1. Instala Buildozer y las dependencias de Android.
@@ -183,32 +251,54 @@ El recálculo se dispara automáticamente:
 El build fija `python-for-android` en `v2024.01.21`, compatible con
 Buildozer 1.5.0 y la toolchain Android usada por el workflow.
 
-## Generar APK firmada y publicarla en GitHub
+---
 
-1. Genera un keystore localmente:
+## CI/CD con GitHub Actions
 
-   ```bash
-   keytool -genkeypair -v -keystore release.jks -alias repartidor -keyalg RSA -keysize 2048 -validity 10000
-   ```
+El workflow `.github/workflows/android-apk.yml` compila la APK debug
+automáticamente en cada push a la rama `feature/enrrutador-prioridades`
+o cuando se lanza manualmente.
 
-2. Crea estos secrets en GitHub:
-   - `ANDROID_KEYSTORE_BASE64`
-   - `ANDROID_KEY_ALIAS`
-   - `ANDROID_KEYSTORE_PASSWORD`
-   - `ANDROID_KEY_PASSWORD`
+### Secrets necesarios para APK firmada (release)
 
-3. Codifica el keystore en base64:
+Para publicar una APK firmada, crea los siguientes secrets en
+**GitHub → Settings → Secrets and variables → Actions**:
 
-   ```bash
-   base64 -w 0 release.jks   # Linux/macOS
-   ```
+| Secret | Descripción |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | Keystore codificado en base64 |
+| `ANDROID_KEY_ALIAS` | Alias de la clave dentro del keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | Contraseña del keystore |
+| `ANDROID_KEY_PASSWORD` | Contraseña de la clave |
+| `GOOGLE_MAPS_API_KEY` | API key de Google Maps para el build |
 
-4. Haz push a `main`/`master` o lanza el workflow manualmente.
+### Generar el keystore y codificarlo
+
+```bash
+# 1. Generar keystore
+keytool -genkeypair -v -keystore release.jks -alias repartidor \
+        -keyalg RSA -keysize 2048 -validity 10000
+
+# 2. Codificar en base64 (Linux/macOS)
+base64 -w 0 release.jks
+
+# Pega el resultado como valor del secret ANDROID_KEYSTORE_BASE64
+```
+
+> ⚠️ **Nunca subas el archivo `.jks` al repositorio.** Está incluido en
+> `.gitignore` para evitar exposición accidental.
 
 ---
 
 ## Ejecutar pruebas
 
 ```bash
+python -m pytest tests/ -v
+```
+
+O con el runner estándar de unittest:
+
+```bash
 python -m unittest discover tests -v
 ```
+
