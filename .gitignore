@@ -14,10 +14,23 @@ htmlcov/
 
 # Local runtime files
 .env
+.env.*
+!.env.example
 users.json
 webServerApiSettings.json
 bin/*.apk
 bin/*.aab
+
+# Android signing keys (NEVER commit)
+*.jks
+*.keystore
+release-key.*
+upload-key.*
+
+# Logs
+*.log
+build.log
+build.exit
 
 # Virtual environments
 .venv/
