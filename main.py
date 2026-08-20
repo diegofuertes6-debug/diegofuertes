@@ -48,9 +48,10 @@ def _project_dir():
 
 
 def _hora_actual():
-    """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
+    """Devuelve los minutos totales desde medianoche usando ``datetime.now()``."""
     from datetime import datetime
-    return datetime.now().hour
+    now = datetime.now()
+    return now.hour * 60 + now.minute
 
 
 class RepartidorApp(App if App is not object else object):
@@ -368,17 +369,17 @@ class RepartidorApp(App if App is not object else object):
             self.abrir_google_maps()
 
     # ------------------------------------------------------------------
-    # Reloj 19:00
+    # Reloj 18:45
     # ------------------------------------------------------------------
     def _programar_reloj_19(self):
-        """Recalcula la ruta cada minuto para aplicar la regla de las 19:00."""
+        """Recalcula la ruta cada minuto para aplicar la regla de las 18:45."""
         if Clock:
             self._clock_19 = Clock.schedule_interval(self._verificar_hora_19, 60)
 
     def _verificar_hora_19(self, *_args):
         hora = _hora_actual()
-        if hora >= 19 and self.lista_paradas:
-            self._set_estado('🕖 Son las 19:00 – reordenando por prioridad…')
+        if hora >= 1125 and self.lista_paradas:  # 18:45
+            self._set_estado('🕖 Son las 18:45 – reordenando por prioridad…')
             self._refrescar_lista()
 
     # ------------------------------------------------------------------

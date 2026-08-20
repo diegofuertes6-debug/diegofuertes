@@ -3,13 +3,13 @@
 
 Geolocalización, gestión de paradas con prioridad y optimización de rutas.
 
-Cómo funciona la regla de las 19:00
+Cómo funciona la regla de las 18:45
 -------------------------------------
-- La hora local del dispositivo se consulta con ``datetime.now().hour``.
-- Si la hora actual es >= 19, ``priorizar_paradas`` reordena primero por
+- La hora local del dispositivo se consulta con ``datetime.now()``.
+- Si la hora actual es >= 18:45, ``priorizar_paradas`` reordena primero por
   prioridad (alta > media > baja) y dentro de cada grupo conserva el orden
   de menor distancia acumulada (nearest-neighbor greedy).
-- Si la app se abre después de las 19:00 la política se aplica desde el
+- Si la app se abre después de las 18:45 la política se aplica desde el
   primer cálculo. El recálculo también ocurre cuando el usuario añade o
   elimina paradas o cambia el modo de transporte.
 
@@ -817,16 +817,16 @@ def eliminar_parada(paradas, indice):
 
 
 def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
-    """Ordena las paradas aplicando optimización de ruta y regla de las 19:00.
+    """Ordena las paradas aplicando optimización de ruta y regla de las 18:45.
 
-    Regla de las 19:00 (hora local)
+    Regla de las 18:45 (hora local)
     --------------------------------
-    Si ``hora_actual`` (entero 0-23) es >= 19, las paradas **pendientes** se
-    reordenan primero por prioridad (alta > media > baja) y dentro de cada
-    grupo de prioridad se aplica la heurística del vecino más cercano para
-    minimizar la distancia recorrida.
+    Si ``hora_actual`` (minutos totales desde medianoche, 0-1439) es >= 1125
+    (18:45), las paradas **pendientes** se reordenan primero por prioridad
+    (alta > media > baja) y dentro de cada grupo de prioridad se aplica la
+    heurística del vecino más cercano para minimizar la distancia recorrida.
 
-    Antes de las 19:00 se aplica solo la heurística del vecino más cercano
+    Antes de las 18:45 se aplica solo la heurística del vecino más cercano
     teniendo en cuenta el modo de transporte (pie/coche/moto no cambia la
     heurística pero el parámetro queda disponible para futuras integraciones
     con la Directions API).
@@ -834,8 +834,8 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Args:
         paradas: Lista de dicts con al menos ``lat``, ``lng`` y ``prioridad``.
         modo: ``'pie'``, ``'coche'`` o ``'moto'`` (por defecto ``'moto'``).
-        hora_actual: Hora local (0-23).  Si es ``None`` se usa
-            ``datetime.now().hour``.
+        hora_actual: Minutos totales desde medianoche (0-1439). Si es ``None``
+            se calcula con ``datetime.now()``.
         origen_lat: Latitud actual del repartidor (opcional).
         origen_lng: Longitud actual del repartidor (opcional).
 
@@ -850,14 +850,15 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
         modo = 'moto'
 
     if hora_actual is None:
-        hora_actual = datetime.now().hour
+        now = datetime.now()
+        hora_actual = now.hour * 60 + now.minute
 
     paradas_validas = [
         normalizar_metadatos_parada(p) for p in paradas if isinstance(p, dict)
     ]
 
-    if hora_actual >= 19:
-        # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
+    if hora_actual >= 1125:  # 18:45
+        # Regla 18:45: prioridad primero, luego nearest-neighbor por grupo
         grupos = {prioridad: [] for prioridad in PRIORITY_ORDER}
         for p in paradas_validas:
             prioridad = str(p.get('prioridad', 'media')).lower()
@@ -874,7 +875,7 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
                     cur_lat, cur_lng = ultimo['lat'], ultimo['lng']
         return resultado
 
-    # Antes de las 19:00: optimización por vecino más cercano globalmente
+    # Antes de las 18:45: optimización por vecino más cercano globalmente
     return _nearest_neighbor(paradas_validas, origen_lat, origen_lng)
 
 
@@ -884,7 +885,7 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Args:
         paradas: Lista de dicts de paradas.
         modo: Modo de transporte (``'pie'``, ``'coche'``, ``'moto'``).
-        hora_actual: Hora local (0-23) para la regla de las 19:00.
+        hora_actual: Minutos totales desde medianoche (0-1439) para la regla de las 18:45.
         origen_lat: Latitud actual del repartidor (opcional).
         origen_lng: Longitud actual del repartidor (opcional).
 

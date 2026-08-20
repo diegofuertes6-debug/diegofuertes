@@ -12,7 +12,7 @@ import p4a_hook
 
 
 class PriorizacionTests(unittest.TestCase):
-    """Pruebas de priorización de paradas y regla de las 19:00."""
+    """Pruebas de priorización de paradas y regla de las 18:45."""
 
     def _paradas(self):
         return [
@@ -21,26 +21,26 @@ class PriorizacionTests(unittest.TestCase):
             {'address': 'C', 'lat': 40.2, 'lng': -3.2, 'prioridad': 'media', 'estado': 'pendiente'},
         ]
 
-    def test_priorizar_antes_19_nearest_neighbor(self):
-        """Antes de las 19:00 el orden es nearest-neighbor (no por prioridad)."""
+    def test_priorizar_antes_1845_nearest_neighbor(self):
+        """Antes de las 18:45 el orden es nearest-neighbor (no por prioridad)."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=10)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=600)
         # B es el primero porque es el más cercano a A (primer elemento sin origen)
         self.assertIsInstance(ordenadas, list)
         self.assertEqual(len(ordenadas), 3)
 
-    def test_priorizar_a_las_19_prioridad_primero(self):
-        """A las 19:00 las paradas de alta prioridad deben aparecer primero."""
+    def test_priorizar_a_las_1845_prioridad_primero(self):
+        """A las 18:45 las paradas de alta prioridad deben aparecer primero."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=1125)
         prioridades = [p['prioridad'] for p in ordenadas]
         # alta debe ir antes que media y baja
         self.assertEqual(prioridades[0], 'alta')
 
-    def test_priorizar_despues_19_alta_media_baja(self):
+    def test_priorizar_despues_1845_alta_media_baja(self):
         """A las 20:00 el orden debe ser alta > media > baja."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=20)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=1200)
         prioridades = [p['prioridad'] for p in ordenadas]
         orden_esperado = sorted(prioridades, key=lambda p: {'alta': 0, 'media': 1, 'baja': 2}[p])
         self.assertEqual(prioridades, orden_esperado)
@@ -48,11 +48,11 @@ class PriorizacionTests(unittest.TestCase):
     def test_modo_invalido_usa_moto(self):
         """Modo desconocido debe tratarse como 'moto' sin error."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='bicicleta', hora_actual=10)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='bicicleta', hora_actual=600)
         self.assertEqual(len(ordenadas), 3)
 
     def test_paradas_vacias(self):
-        self.assertEqual(repartidor.priorizar_paradas([], hora_actual=19), [])
+        self.assertEqual(repartidor.priorizar_paradas([], hora_actual=1125), [])
 
 
 class AsignarPrioridadTests(unittest.TestCase):
@@ -102,11 +102,11 @@ class ModoTransporteTests(unittest.TestCase):
     def test_cambio_modo_recalcula_ruta(self):
         paradas = self._paradas_con_coords()
         url_moto = repartidor.generar_ruta_maps(
-            paradas, modo='moto', hora_actual=10,
+            paradas, modo='moto', hora_actual=600,
             origen_lat=39.9, origen_lng=-2.9,
         )
         url_pie = repartidor.generar_ruta_maps(
-            paradas, modo='pie', hora_actual=10,
+            paradas, modo='pie', hora_actual=600,
             origen_lat=39.9, origen_lng=-2.9,
         )
         self.assertIn('travelmode=driving', url_moto)
@@ -117,7 +117,7 @@ class ModoTransporteTests(unittest.TestCase):
         url = repartidor.generar_ruta_maps(
             self._paradas_con_coords(),
             modo='moto',
-            hora_actual=10,
+            hora_actual=600,
             origen_lat=39.9,
             origen_lng=-2.9,
         )
@@ -131,14 +131,14 @@ class ModoTransporteTests(unittest.TestCase):
     def test_generar_ruta_sin_coordenadas_validas(self):
         paradas = [{'address': 'X', 'prioridad': 'media'}]
         resultado = repartidor.generar_ruta_maps(
-            paradas, modo='coche', hora_actual=10,
+            paradas, modo='coche', hora_actual=600,
             origen_lat=40.0, origen_lng=-3.0,
         )
         self.assertIn('paradas sin coordenadas válidas', resultado)
 
     def test_generar_ruta_bloquea_origen_invalido(self):
         resultado = repartidor.generar_ruta_maps(
-            self._paradas_con_coords(), modo='coche', hora_actual=10
+            self._paradas_con_coords(), modo='coche', hora_actual=600
         )
         self.assertIn('ubicación de origen válida', resultado)
 
@@ -951,30 +951,30 @@ class ApiKeyLoadingTests(unittest.TestCase):
 
 
 class ReglaHoraria19Tests(unittest.TestCase):
-    """Pruebas específicas para la regla de priorización a las 19:00."""
+    """Pruebas específicas para la regla de priorización a las 18:45."""
 
-    def test_antes_19_no_aplica_prioridad_estricta(self):
+    def test_antes_1845_no_aplica_prioridad_estricta(self):
         paradas = [
             {'address': 'Baja', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja'},
             {'address': 'Alta', 'lat': 40.5, 'lng': -3.5, 'prioridad': 'alta'},
         ]
-        # Antes de las 19:00: el orden depende de nearest-neighbor, no de prioridad
-        result_18 = repartidor.priorizar_paradas(paradas, hora_actual=18)
-        result_19 = repartidor.priorizar_paradas(paradas, hora_actual=19)
-        # A las 19:00, alta debe ser primero
-        self.assertEqual(result_19[0]['prioridad'], 'alta')
-        # Los resultados pueden diferir entre 18:00 y 19:00
-        prioridades_19 = [p['prioridad'] for p in result_19]
-        self.assertEqual(prioridades_19[0], 'alta')
+        # Antes de las 18:45: el orden depende de nearest-neighbor, no de prioridad
+        result_antes = repartidor.priorizar_paradas(paradas, hora_actual=1080)  # 18:00
+        result_1845 = repartidor.priorizar_paradas(paradas, hora_actual=1125)  # 18:45
+        # A las 18:45, alta debe ser primero
+        self.assertEqual(result_1845[0]['prioridad'], 'alta')
+        # Los resultados pueden diferir entre 18:00 y 18:45
+        prioridades_1845 = [p['prioridad'] for p in result_1845]
+        self.assertEqual(prioridades_1845[0], 'alta')
 
-    def test_regla_19_grupos_optimizados(self):
+    def test_regla_1845_grupos_optimizados(self):
         """Dentro de cada grupo de prioridad se aplica nearest-neighbor."""
         paradas = [
             {'address': 'A1', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'alta'},
             {'address': 'A2', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta'},
             {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'baja'},
         ]
-        result = repartidor.priorizar_paradas(paradas, hora_actual=19)
+        result = repartidor.priorizar_paradas(paradas, hora_actual=1125)  # 18:45
         # Primero deben salir las dos de alta
         self.assertEqual(result[0]['prioridad'], 'alta')
         self.assertEqual(result[1]['prioridad'], 'alta')
@@ -995,14 +995,14 @@ class LegacyCompatTests(unittest.TestCase):
     def test_generar_ruta_maps_sin_paradas(self):
         self.assertEqual(repartidor.generar_ruta_maps([], modo='moto'), 'No hay paradas')
 
-    def test_priorizar_paradas_orden_correcto_hora_19(self):
-        """Compatibilidad: alta primero a las 19:00."""
+    def test_priorizar_paradas_orden_correcto_hora_1845(self):
+        """Compatibilidad: alta primero a las 18:45."""
         paradas = [
             {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'baja'},
             {'address': 'B', 'lat': 1.1, 'lng': 1.1, 'prioridad': 'alta'},
             {'address': 'C', 'lat': 1.2, 'lng': 1.2, 'prioridad': 'media'},
         ]
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=1125)
         self.assertEqual(ordenadas[0]['prioridad'], 'alta')
 
 
