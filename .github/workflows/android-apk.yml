@@ -13,6 +13,8 @@ jobs:
     env:
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROIDSDK: ${{ github.workspace }}/android-sdk
+      APP_ANDROID_SDK_PATH: ${{ github.workspace }}/android-sdk
 
     steps:
       - name: Checkout repository
@@ -29,28 +31,48 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install OS dependencies for Buildozer
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             git zip unzip openjdk-17-jdk \
             python3-pip python3-venv \
-            libncurses5 libffi-dev libssl-dev \
-            autoconf automake libtool pkg-config
+            libncurses5-dev libffi-dev libssl-dev \
+            autoconf automake libtool pkg-config wget tar
+
+      - name: Install Android SDK command-line tools
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+            -O "$RUNNER_TEMP/cmdline-tools.zip"
+          unzip -q "$RUNNER_TEMP/cmdline-tools.zip" -d "$RUNNER_TEMP/cmdline-tools"
+          mv "$RUNNER_TEMP/cmdline-tools/cmdline-tools/"* \
+            "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+
+          # Buildozer 1.5.0 still resolves sdkmanager from the legacy tools layout.
+          ln -s cmdline-tools/latest "$ANDROID_SDK_ROOT/tools"
+
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2"
+
+          test -x "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
+          test -x "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl"
+          test -f "$ANDROID_SDK_ROOT/platforms/android-33/android.jar"
+
+      - name: Export Android SDK paths
+        run: |
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
 
       - name: Install Buildozer and Python requirements
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install buildozer cython
-
-      - name: Instalar Build Tools + aceptar licencias (incluye aidl)
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager --install "platform-tools" "platforms;android-37" "build-tools;37.0.0"
-          ls -la "$ANDROID_SDK_ROOT/build-tools/37.0.0" | grep aidl
+          python -m pip install buildozer==1.5.0 Cython==0.29.33
 
       - name: Build APK
         run: |
@@ -59,17 +81,17 @@ jobs:
       - name: Prepare artifact
         run: |
           mkdir -p dist
-          APK_PATH=$(find . -type f -iname "*.apk" | head -n 1)
+          APK_PATH=$(find bin -maxdepth 1 -type f -name "*-debug.apk" -print -quit)
           if [ -z "$APK_PATH" ]; then
-            echo "No APK generated."
+            echo "No debug APK generated in bin/."
             exit 1
           fi
-          cp "$APK_PATH" dist/app-release.apk
+          cp "$APK_PATH" dist/repartidorapp-debug.apk
           ls -l dist
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release.apk
-          path: dist/app-release.apk
+          name: repartidorapp-debug-apk
+          path: dist/repartidorapp-debug.apk
           if-no-files-found: error
