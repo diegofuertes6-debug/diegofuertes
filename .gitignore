@@ -14,10 +14,19 @@ htmlcov/
 
 # Local runtime files
 .env
+.env.*
 users.json
 webServerApiSettings.json
-bin/*.apk
-bin/*.aab
+*.jks
+*.keystore
+bin/**/*.apk
+bin/**/*.aab
+.github/workflows/*.apk
+.github/workflows/*.aab
+build*.log
+build.exit
+dist/
+release/
 
 # Virtual environments
 .venv/

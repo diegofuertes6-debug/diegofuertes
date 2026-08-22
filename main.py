@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import webbrowser
@@ -33,8 +32,7 @@ except ImportError:  # pragma: no cover
 
 import repartidor
 import android_services
-
-CONFIG_FILE = 'webServerApiSettings.json'
+import auth
 
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
@@ -44,29 +42,28 @@ STOP_ACTIONS = (
     ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
     ('escaner', '📷', 'Escáner', 'Escanear, revisar y añadir dirección', 'escanear_camara'),
 )
+INTEGRATED_STOP_BUTTON_TEXT = '➕ AÑADIR PARADA\n📷 Escáner · 🔍 Lupa · 🎙 Micrófono'
 
 
 def _project_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _config_path():
-    return os.path.join(_project_dir(), CONFIG_FILE)
-
-
 def _hora_actual():
-    """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
+    """Devuelve los minutos totales desde medianoche usando ``datetime.now()``."""
     from datetime import datetime
-    return datetime.now().hour
+    now = datetime.now()
+    return now.hour * 60 + now.minute
 
 
 class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lista_paradas = []
-        self.api_key = repartidor.API_KEY or self._cargar_api_key_legacy()
+        self.api_key = repartidor.API_KEY
         self.lbl_estado = None
         self.btn_ruta = None
+        self.btn_acciones_parada = None
         self.lista_widget = None
         self.spinner_modo = None
         self.spinner_prioridad = None
@@ -78,6 +75,7 @@ class RepartidorApp(App if App is not object else object):
         self._notificacion = repartidor.DEFAULT_LETTER
         self._clock_19 = None
         self._popup_confirmacion = None
+        self._popup_acciones_parada = None
         self._temp_scan_path = None
         self._camera_en_curso = False
         self._location_permission_requested = False
@@ -89,21 +87,9 @@ class RepartidorApp(App if App is not object else object):
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
         self._open_map_when_located = False
-
-    # ------------------------------------------------------------------
-    # Legacy API key loader (compatible con el JSON existente)
-    # ------------------------------------------------------------------
-    def _cargar_api_key_legacy(self):
-        config_path = _config_path()
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict):
-                    return str(data.get('googleMapsApiKey', '') or '')
-            except (OSError, ValueError):
-                pass
-        return ''
+        # Autenticación
+        self._usuario_actual = None
+        self._popup_auth = None
 
     # ------------------------------------------------------------------
     # Build UI
@@ -124,37 +110,12 @@ class RepartidorApp(App if App is not object else object):
         )
         root.add_widget(self.lbl_estado)
 
-        # ---- Alta de parada: un campo y exactamente tres acciones ----
-        fila_buscar = BoxLayout(size_hint_y=None, height='64dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
             multiline=False,
-            size_hint_x=1,
             padding=(10, 18),
         )
         self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
-        fila_buscar.add_widget(self.txt_busqueda)
-        colores = (
-            (0.95, 0.55, 0.1, 1),
-            (0.2, 0.7, 0.3, 1),
-            (0.1, 0.6, 0.9, 1),
-        )
-        for (_identificador, icono, texto, etiqueta, handler), color in zip(
-            STOP_ACTIONS, colores
-        ):
-            boton = Button(
-                text=f'{icono}\n{texto}',
-                size_hint_x=None,
-                width='60dp',
-                font_size='14sp',
-                background_normal='',
-                background_color=color,
-            )
-            boton.tooltip_text = etiqueta
-            boton.accessibility_label = etiqueta
-            boton.bind(on_press=getattr(self, handler))
-            fila_buscar.add_widget(boton)
-        root.add_widget(fila_buscar)
 
         # ---- Selección prioridad y modo transporte ----
         fila_opts = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
@@ -215,13 +176,290 @@ class RepartidorApp(App if App is not object else object):
         self.btn_ruta.bind(on_press=self.abrir_google_maps)
         root.add_widget(self.btn_ruta)
 
+        # ---- Botón integrado de alta de parada ----
+        self.btn_acciones_parada = Button(
+            text=INTEGRATED_STOP_BUTTON_TEXT,
+            size_hint_y=None,
+            height='72dp',
+            font_size='16sp',
+            background_normal='',
+            background_color=(0.15, 0.45, 0.85, 1),
+        )
+        self.btn_acciones_parada.bind(on_press=self.mostrar_acciones_parada)
+        root.add_widget(self.btn_acciones_parada)
+
         self._programar_reloj_19()
         if Clock:
-            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.5)
+            Clock.schedule_once(self._mostrar_login, 0.3)
         else:
-            self._solicitar_ubicacion_inicial()
+            self._mostrar_login()
 
         return root
+
+    # ------------------------------------------------------------------
+    # Autenticación – login / registro / donación
+    # ------------------------------------------------------------------
+    def _mostrar_login(self, *_args):
+        """Muestra el popup de inicio de sesión al arrancar la app."""
+        if Popup is object:
+            # Entorno sin Kivy (tests / escritorio sin display): arrancamos
+            # directamente sin requerir autenticación.
+            if Clock:
+                Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+            else:
+                self._solicitar_ubicacion_inicial()
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text='🚚 App Repartidor\nInicia sesión para continuar',
+            halign='center',
+            font_size='16sp',
+            size_hint_y=None,
+            height='60dp',
+        ))
+        txt_user = TextInput(
+            hint_text='Usuario',
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass = TextInput(
+            hint_text='Contraseña',
+            password=True,
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        lbl_error = Label(
+            text='',
+            color=(1, 0.3, 0.3, 1),
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        )
+        contenido.add_widget(txt_user)
+        contenido.add_widget(txt_pass)
+        contenido.add_widget(lbl_error)
+
+        btn_entrar = Button(
+            text='Entrar',
+            size_hint_y=None,
+            height='48dp',
+            background_color=(0.2, 0.6, 0.9, 1),
+        )
+        btn_registrar = Button(
+            text='Crear cuenta nueva',
+            size_hint_y=None,
+            height='44dp',
+            background_color=(0.2, 0.7, 0.3, 1),
+        )
+        contenido.add_widget(btn_entrar)
+        contenido.add_widget(btn_registrar)
+
+        popup = Popup(
+            title='Iniciar sesión',
+            content=contenido,
+            size_hint=(0.9, None),
+            height='420dp',
+            auto_dismiss=False,
+        )
+        self._popup_auth = popup
+
+        def _login(*_):
+            usuario = txt_user.text.strip()
+            contrasena = txt_pass.text
+            if not usuario or not contrasena:
+                lbl_error.text = 'Rellena usuario y contraseña.'
+                return
+            if auth.verify_user(self.user_data_dir, usuario, contrasena):
+                self._usuario_actual = usuario
+                popup.dismiss()
+                self._popup_auth = None
+                tipo = auth.get_account_type(self.user_data_dir, usuario)
+                if tipo == auth.ACCOUNT_TRIAL:
+                    self._set_estado(
+                        f'Bienvenido, {usuario} 👋  '
+                        f'(Versión prueba: máx. {auth.TRIAL_MAX_PARADAS} paradas)'
+                    )
+                else:
+                    self._set_estado(f'Bienvenido, {usuario} 👋  (Versión completa ✅)')
+                if Clock:
+                    Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+                else:
+                    self._solicitar_ubicacion_inicial()
+            else:
+                lbl_error.text = 'Usuario o contraseña incorrectos.'
+
+        btn_entrar.bind(on_press=_login)
+        txt_pass.bind(on_text_validate=_login)
+        btn_registrar.bind(on_press=lambda *_: self._mostrar_registro(popup))
+        popup.open()
+
+    def _mostrar_registro(self, popup_login):
+        """Cierra el login y abre el formulario de registro."""
+        popup_login.dismiss()
+        if Popup is object:
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text='Crear cuenta nueva',
+            halign='center',
+            font_size='16sp',
+            size_hint_y=None,
+            height='44dp',
+        ))
+        txt_user = TextInput(
+            hint_text='Nombre de usuario',
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass = TextInput(
+            hint_text='Contraseña',
+            password=True,
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        txt_pass2 = TextInput(
+            hint_text='Repite la contraseña',
+            password=True,
+            multiline=False,
+            size_hint_y=None,
+            height='48dp',
+            padding=(10, 12),
+        )
+        lbl_error = Label(
+            text='',
+            color=(1, 0.3, 0.3, 1),
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        )
+        contenido.add_widget(txt_user)
+        contenido.add_widget(txt_pass)
+        contenido.add_widget(txt_pass2)
+        contenido.add_widget(lbl_error)
+
+        fila_btns = BoxLayout(size_hint_y=None, height='48dp', spacing=8)
+        btn_volver = Button(text='← Volver', background_color=(0.5, 0.5, 0.5, 1))
+        btn_crear = Button(text='Crear cuenta', background_color=(0.2, 0.7, 0.3, 1))
+        fila_btns.add_widget(btn_volver)
+        fila_btns.add_widget(btn_crear)
+        contenido.add_widget(fila_btns)
+
+        popup = Popup(
+            title='Registro',
+            content=contenido,
+            size_hint=(0.9, None),
+            height='480dp',
+            auto_dismiss=False,
+        )
+        self._popup_auth = popup
+
+        def _registrar(*_):
+            usuario = txt_user.text.strip()
+            contrasena = txt_pass.text
+            contrasena2 = txt_pass2.text
+            if not usuario or not contrasena:
+                lbl_error.text = 'Rellena todos los campos.'
+                return
+            if contrasena != contrasena2:
+                lbl_error.text = 'Las contraseñas no coinciden.'
+                return
+            try:
+                ok = auth.register_user(self.user_data_dir, usuario, contrasena)
+            except ValueError as exc:
+                lbl_error.text = str(exc)
+                return
+            if not ok:
+                lbl_error.text = 'Ese nombre de usuario ya existe.'
+                return
+            self._usuario_actual = usuario
+            popup.dismiss()
+            self._popup_auth = None
+            self._set_estado(
+                f'¡Cuenta creada! Bienvenido, {usuario} 👋  '
+                f'(Versión prueba: máx. {auth.TRIAL_MAX_PARADAS} paradas)'
+            )
+            if Clock:
+                Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.2)
+            else:
+                self._solicitar_ubicacion_inicial()
+
+        btn_crear.bind(on_press=_registrar)
+        btn_volver.bind(on_press=lambda *_: self._reabrir_login(popup))
+        popup.open()
+
+    def _reabrir_login(self, popup_registro):
+        """Cierra el registro y vuelve al login."""
+        popup_registro.dismiss()
+        self._mostrar_login()
+
+    def _mostrar_donacion(self, *_args):
+        """Muestra el popup de donación para desbloquear la versión completa."""
+        if Popup is object:
+            return
+
+        contenido = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        contenido.add_widget(Label(
+            text=(
+                '🎁 Versión completa\n\n'
+                'La versión de prueba está limitada a\n'
+                f'{auth.TRIAL_MAX_PARADAS} paradas.\n\n'
+                'Haz una donación para desbloquear\n'
+                'la versión completa sin límites.'
+            ),
+            halign='center',
+            font_size='14sp',
+            size_hint_y=None,
+            height='180dp',
+        ))
+
+        btn_donar = Button(
+            text='☕ Donar y desbloquear',
+            size_hint_y=None,
+            height='52dp',
+            background_color=(0.95, 0.6, 0.1, 1),
+        )
+        btn_cerrar = Button(
+            text='Ahora no',
+            size_hint_y=None,
+            height='44dp',
+            background_color=(0.45, 0.45, 0.45, 1),
+        )
+        contenido.add_widget(btn_donar)
+        contenido.add_widget(btn_cerrar)
+
+        popup = Popup(
+            title='Desbloquear versión completa',
+            content=contenido,
+            size_hint=(0.88, None),
+            height='400dp',
+            auto_dismiss=False,
+        )
+
+        def _abrir_donacion(*_):
+            if android_services.is_android():
+                android_services.open_map_url(auth.DONATION_URL, self._set_estado)
+            else:
+                webbrowser.open(auth.DONATION_URL)
+            # Tras donar el usuario puede pedir al desarrollador que active full
+            popup.dismiss()
+            self._set_estado(
+                '¡Gracias! Una vez confirmada la donación tu cuenta será activada. '
+                'Contacta con soporte si necesitas ayuda.'
+            )
+
+        btn_donar.bind(on_press=_abrir_donacion)
+        btn_cerrar.bind(on_press=lambda *_: popup.dismiss())
+        popup.open()
 
     # ------------------------------------------------------------------
     # Geolocalización
@@ -390,22 +628,115 @@ class RepartidorApp(App if App is not object else object):
             self.abrir_google_maps()
 
     # ------------------------------------------------------------------
-    # Reloj 19:00
+    # Reloj 18:45
     # ------------------------------------------------------------------
     def _programar_reloj_19(self):
-        """Recalcula la ruta cada minuto para aplicar la regla de las 19:00."""
+        """Recalcula la ruta cada minuto para aplicar la regla de las 18:45."""
         if Clock:
             self._clock_19 = Clock.schedule_interval(self._verificar_hora_19, 60)
 
     def _verificar_hora_19(self, *_args):
         hora = _hora_actual()
-        if hora >= 19 and self.lista_paradas:
-            self._set_estado('🕖 Son las 19:00 – reordenando por prioridad…')
+        if hora >= 1125 and self.lista_paradas:  # 18:45
+            self._set_estado('🕖 Son las 18:45 – reordenando por prioridad…')
             self._refrescar_lista()
 
     # ------------------------------------------------------------------
     # Entrada de paradas
     # ------------------------------------------------------------------
+    def mostrar_acciones_parada(self, *_args):
+        if Popup is object:
+            self._set_estado(
+                'Usa el botón integrado de la app para abrir cámara, lupa o micrófono.'
+            )
+            return
+
+        if self._popup_acciones_parada is not None:
+            self._popup_acciones_parada.dismiss()
+            self._popup_acciones_parada = None
+
+        contenido = BoxLayout(orientation='vertical', padding=12, spacing=10)
+        contenido.add_widget(Label(
+            text='Elige cómo añadir la parada',
+            size_hint_y=None,
+            height='36dp',
+            halign='center',
+        ))
+        entrada = TextInput(
+            text=(self.txt_busqueda.text or '') if self.txt_busqueda else '',
+            hint_text='Escribir dirección…',
+            multiline=False,
+            size_hint_y=None,
+            height='52dp',
+            padding=(10, 13),
+        )
+        contenido.add_widget(entrada)
+
+        acciones_manual = BoxLayout(size_hint_y=None, height='52dp', spacing=8)
+        btn_lupa = Button(
+            text='🔍 Añadir parada',
+            background_normal='',
+            background_color=(0.95, 0.55, 0.1, 1),
+        )
+        btn_lupa.bind(
+            on_press=lambda *_args: self._buscar_manual_desde_popup(
+                self._popup_acciones_parada, entrada
+            )
+        )
+        acciones_manual.add_widget(btn_lupa)
+        contenido.add_widget(acciones_manual)
+
+        acciones = BoxLayout(size_hint_y=None, height='56dp', spacing=8)
+        for texto, color, accion in (
+            ('🎙 Micrófono', (0.2, 0.7, 0.3, 1), self.dictar_microfono),
+            ('📷 Escáner', (0.1, 0.6, 0.9, 1), self.escanear_camara),
+        ):
+            boton = Button(
+                text=texto,
+                background_normal='',
+                background_color=color,
+            )
+            boton.bind(
+                on_press=lambda *_args, handler=accion: self._ejecutar_accion_integrada(
+                    self._popup_acciones_parada, handler
+                )
+            )
+            acciones.add_widget(boton)
+        contenido.add_widget(acciones)
+
+        cerrar = Button(text='Cerrar', size_hint_y=None, height='48dp')
+        contenido.add_widget(cerrar)
+        popup = Popup(
+            title='Añadir parada',
+            content=contenido,
+            size_hint=(0.92, None),
+            height='320dp',
+            auto_dismiss=False,
+        )
+        self._popup_acciones_parada = popup
+        cerrar.bind(on_press=lambda *_args: self._cerrar_popup_acciones_parada(popup))
+        entrada.bind(
+            on_text_validate=lambda *_args: self._buscar_manual_desde_popup(
+                popup, entrada
+            )
+        )
+        popup.open()
+
+    def _cerrar_popup_acciones_parada(self, popup):
+        popup.dismiss()
+        if self._popup_acciones_parada is popup:
+            self._popup_acciones_parada = None
+
+    def _ejecutar_accion_integrada(self, popup, accion):
+        self._cerrar_popup_acciones_parada(popup)
+        accion()
+
+    def _buscar_manual_desde_popup(self, popup, entrada, *_args):
+        if self.txt_busqueda is not None:
+            self.txt_busqueda.text = entrada.text
+        if self.buscar_manual():
+            self._cerrar_popup_acciones_parada(popup)
+
     def escanear_camara(self, *_args):
         """Take a photo and propose its OCR address for confirmation."""
         if android_services.is_android():
@@ -501,6 +832,17 @@ class RepartidorApp(App if App is not object else object):
                 f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
             )
             return
+        # Verificar límite de versión prueba
+        if self._es_cuenta_trial() and len(self.lista_paradas) >= auth.TRIAL_MAX_PARADAS:
+            self._set_estado(
+                f'⚠ Versión prueba: máximo {auth.TRIAL_MAX_PARADAS} paradas. '
+                'Hazte con la versión completa para añadir más.'
+            )
+            if Clock:
+                Clock.schedule_once(self._mostrar_donacion, 0.1)
+            else:
+                self._mostrar_donacion()
+            return
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
         resultado['prioridad'] = prioridad
         resultado['paqueteria'] = self._paqueteria
@@ -515,9 +857,13 @@ class RepartidorApp(App if App is not object else object):
         self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
 
     def _abrir_maps_ubicacion(self, lat, lng):
-        """Open Google Maps centered on the given coordinates (non-blocking)."""
+        """Abre Google Maps centrado en las coordenadas dadas.
+
+        Delega en ``android_services.open_map_url`` que maneja tanto el intent
+        de Android como el fallback al navegador en escritorio.
+        """
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
-        self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
+        android_services.open_map_url(url, self._set_estado)
 
     def _usar_direccion_ocr(self, direccion, cp):
         if direccion and cp:
@@ -573,9 +919,11 @@ class RepartidorApp(App if App is not object else object):
         texto = (self.txt_busqueda.text or '').strip() if self.txt_busqueda else ''
         if not texto:
             self._set_estado('Escribe una dirección primero.')
-            return
-        if self._validar_y_anadir(texto, 'búsqueda') and self.txt_busqueda:
+            return False
+        resultado = self._validar_y_anadir(texto, 'búsqueda')
+        if resultado and self.txt_busqueda:
             self.txt_busqueda.text = ''
+        return bool(resultado)
 
     # ------------------------------------------------------------------
     # Geocodificación y gestión de paradas
@@ -689,6 +1037,17 @@ class RepartidorApp(App if App is not object else object):
             self.txt_busqueda.text = ''
 
     def _validar_y_anadir(self, texto, origen):
+        # Verificar límite de versión prueba antes de añadir
+        if self._es_cuenta_trial() and len(self.lista_paradas) >= auth.TRIAL_MAX_PARADAS:
+            self._set_estado(
+                f'⚠ Versión prueba: máximo {auth.TRIAL_MAX_PARADAS} paradas. '
+                'Hazte con la versión completa para añadir más.'
+            )
+            if Clock:
+                Clock.schedule_once(self._mostrar_donacion, 0.1)
+            else:
+                self._mostrar_donacion()
+            return False
         prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
         parada, error = repartidor.iniciar_alta_parada(
             self.lista_paradas,
@@ -709,6 +1068,12 @@ class RepartidorApp(App if App is not object else object):
             lambda: self._geocodificar_parada(parada, origen)
         )
         return True
+
+    def _es_cuenta_trial(self):
+        """Devuelve True si el usuario actual tiene cuenta de prueba."""
+        if not self._usuario_actual:
+            return False
+        return auth.is_trial(self.user_data_dir, self._usuario_actual)
 
     def _geocodificar_parada(self, parada, origen):
         resultado, detalle = repartidor.resolver_geocodificacion(
@@ -946,6 +1311,9 @@ class RepartidorApp(App if App is not object else object):
         if self._popup_confirmacion is not None:
             self._popup_confirmacion.dismiss()
             self._popup_confirmacion = None
+        if self._popup_acciones_parada is not None:
+            self._popup_acciones_parada.dismiss()
+            self._popup_acciones_parada = None
         if self._temp_scan_path:
             self._eliminar_temporal(self._temp_scan_path)
             self._temp_scan_path = None

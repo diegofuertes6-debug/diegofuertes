@@ -3,13 +3,13 @@
 
 Geolocalización, gestión de paradas con prioridad y optimización de rutas.
 
-Cómo funciona la regla de las 19:00
+Cómo funciona la regla de las 18:45
 -------------------------------------
-- La hora local del dispositivo se consulta con ``datetime.now().hour``.
-- Si la hora actual es >= 19, ``priorizar_paradas`` reordena primero por
+- La hora local del dispositivo se consulta con ``datetime.now()``.
+- Si la hora actual es >= 18:45, ``priorizar_paradas`` reordena primero por
   prioridad (alta > media > baja) y dentro de cada grupo conserva el orden
   de menor distancia acumulada (nearest-neighbor greedy).
-- Si la app se abre después de las 19:00 la política se aplica desde el
+- Si la app se abre después de las 18:45 la política se aplica desde el
   primer cálculo. El recálculo también ocurre cuando el usuario añade o
   elimina paradas o cambia el modo de transporte.
 
@@ -41,11 +41,6 @@ PACKAGE_OPTIONS = ('Urgente', 'Normal')
 DEFAULT_PACKAGE = 'Normal'
 LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
 DEFAULT_LETTER = 'Sin cartas'
-
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    load_dotenv = None
 
 try:
     import requests
@@ -312,39 +307,39 @@ def extraer_candidatos_direccion_ocr(texto):
     )
 
 
-def cargar_api_key():
-    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+def _sanitize_api_key(value):
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
+    if not value or value == 'TU_API_KEY_AQUÍ':
+        return ''
+    return value
 
-    if load_dotenv is not None and os.path.exists(dotenv_path):
-        try:
-            load_dotenv(dotenv_path=dotenv_path, override=False)
-        except Exception as exc:
-            print(f'No se pudo cargar .env: {exc}')
-    elif os.path.exists(dotenv_path):
-        with open(dotenv_path, encoding='utf-8') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key == API_KEY_ENV_VAR and value and value != 'TU_API_KEY_AQUÍ':
-                    return value
 
-    api_key = os.getenv(API_KEY_ENV_VAR, '').strip()
-    if api_key and api_key != 'TU_API_KEY_AQUÍ':
-        return api_key
-
+def _cargar_api_key_legacy_json():
     settings_path = os.path.join(os.path.dirname(__file__), 'webServerApiSettings.json')
     data = _safe_read_json(settings_path)
-    if isinstance(data, dict):
-        for key in API_KEY_CANDIDATES:
-            value = data.get(key)
-            if isinstance(value, str) and value.strip() and value.strip() != 'TU_API_KEY_AQUÍ':
-                return value.strip()
-
+    if not isinstance(data, dict):
+        return ''
+    for key in API_KEY_CANDIDATES:
+        value = _sanitize_api_key(data.get(key))
+        if value:
+            return value
     return ''
+
+
+def cargar_api_key():
+    api_key = _sanitize_api_key(os.getenv(API_KEY_ENV_VAR, ''))
+    if api_key:
+        return api_key
+
+    api_key = _cargar_api_key_legacy_json()
+    if api_key:
+        print(
+            'Usando webServerApiSettings.json como compatibilidad temporal; '
+            'configura la clave mediante variables de entorno o GitHub Secrets.'
+        )
+    return api_key
 
 
 API_KEY = cargar_api_key()
@@ -822,16 +817,16 @@ def eliminar_parada(paradas, indice):
 
 
 def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, origen_lng=None):
-    """Ordena las paradas aplicando optimización de ruta y regla de las 19:00.
+    """Ordena las paradas aplicando optimización de ruta y regla de las 18:45.
 
-    Regla de las 19:00 (hora local)
+    Regla de las 18:45 (hora local)
     --------------------------------
-    Si ``hora_actual`` (entero 0-23) es >= 19, las paradas **pendientes** se
-    reordenan primero por prioridad (alta > media > baja) y dentro de cada
-    grupo de prioridad se aplica la heurística del vecino más cercano para
-    minimizar la distancia recorrida.
+    Si ``hora_actual`` (minutos totales desde medianoche, 0-1439) es >= 1125
+    (18:45), las paradas **pendientes** se reordenan primero por prioridad
+    (alta > media > baja) y dentro de cada grupo de prioridad se aplica la
+    heurística del vecino más cercano para minimizar la distancia recorrida.
 
-    Antes de las 19:00 se aplica solo la heurística del vecino más cercano
+    Antes de las 18:45 se aplica solo la heurística del vecino más cercano
     teniendo en cuenta el modo de transporte (pie/coche/moto no cambia la
     heurística pero el parámetro queda disponible para futuras integraciones
     con la Directions API).
@@ -839,8 +834,8 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Args:
         paradas: Lista de dicts con al menos ``lat``, ``lng`` y ``prioridad``.
         modo: ``'pie'``, ``'coche'`` o ``'moto'`` (por defecto ``'moto'``).
-        hora_actual: Hora local (0-23).  Si es ``None`` se usa
-            ``datetime.now().hour``.
+        hora_actual: Minutos totales desde medianoche (0-1439). Si es ``None``
+            se calcula con ``datetime.now()``.
         origen_lat: Latitud actual del repartidor (opcional).
         origen_lng: Longitud actual del repartidor (opcional).
 
@@ -855,14 +850,15 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
         modo = 'moto'
 
     if hora_actual is None:
-        hora_actual = datetime.now().hour
+        now = datetime.now()
+        hora_actual = now.hour * 60 + now.minute
 
     paradas_validas = [
         normalizar_metadatos_parada(p) for p in paradas if isinstance(p, dict)
     ]
 
-    if hora_actual >= 19:
-        # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
+    if hora_actual >= 1125:  # 18:45
+        # Regla 18:45: prioridad primero, luego nearest-neighbor por grupo
         grupos = {prioridad: [] for prioridad in PRIORITY_ORDER}
         for p in paradas_validas:
             prioridad = str(p.get('prioridad', 'media')).lower()
@@ -879,7 +875,7 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
                     cur_lat, cur_lng = ultimo['lat'], ultimo['lng']
         return resultado
 
-    # Antes de las 19:00: optimización por vecino más cercano globalmente
+    # Antes de las 18:45: optimización por vecino más cercano globalmente
     return _nearest_neighbor(paradas_validas, origen_lat, origen_lng)
 
 
@@ -889,7 +885,7 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Args:
         paradas: Lista de dicts de paradas.
         modo: Modo de transporte (``'pie'``, ``'coche'``, ``'moto'``).
-        hora_actual: Hora local (0-23) para la regla de las 19:00.
+        hora_actual: Minutos totales desde medianoche (0-1439) para la regla de las 18:45.
         origen_lat: Latitud actual del repartidor (opcional).
         origen_lng: Longitud actual del repartidor (opcional).
 

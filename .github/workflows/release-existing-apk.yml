@@ -18,15 +18,18 @@ jobs:
         shell: bash
         run: |
           set -e
-          shopt -s nullglob
-          candidates=(bin/**/*.apk bin/*.apk .github/workflows/*.apk)
-
-          if [ ${#candidates[@]} -eq 0 ]; then
-            echo "No se encontró ninguna APK en bin/ ni en .github/workflows/"
+          if [ ! -d bin ]; then
+            echo "No existe el directorio bin/"
             exit 1
           fi
 
-          source_apk="${candidates[0]}"
+          source_apk="$(find bin -type f -name '*.apk' | sort | head -n 1)"
+
+          if [ -z "$source_apk" ]; then
+            echo "No se encontró ninguna APK en bin/"
+            exit 1
+          fi
+
           mkdir -p release
           cp "$source_apk" "release/repartidor-firmada.apk"
 

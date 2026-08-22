@@ -104,10 +104,16 @@ def open_location_settings(on_error):
 
 
 def open_map_url(url, on_error):
-    """Open a Maps directions URL through Android's ACTION_VIEW intent."""
+    """Open a Maps directions URL through Android's ACTION_VIEW intent.
+
+    On non-Android environments falls back to ``webbrowser.open`` silently.
+    If the Google Maps app is not installed, tries any available maps app and
+    finally falls back to the browser rather than showing an error.
+    """
     if not is_android():
-        on_error('La aplicación de mapas solo se abre por Intent en Android.')
-        return False
+        import webbrowser
+        webbrowser.open(url)
+        return True
     try:
         from android import mActivity
         from jnius import autoclass
@@ -119,8 +125,10 @@ def open_map_url(url, on_error):
         if intent.resolveActivity(mActivity.getPackageManager()) is None:
             intent.setPackage(None)
         if intent.resolveActivity(mActivity.getPackageManager()) is None:
-            on_error('No hay ninguna aplicación de mapas disponible.')
-            return False
+            # No maps app at all — open in the browser as last resort
+            import webbrowser
+            webbrowser.open(url)
+            return True
         mActivity.startActivity(intent)
         return True
     except Exception as exc:

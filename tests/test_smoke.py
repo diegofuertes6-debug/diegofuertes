@@ -12,7 +12,7 @@ import p4a_hook
 
 
 class PriorizacionTests(unittest.TestCase):
-    """Pruebas de priorización de paradas y regla de las 19:00."""
+    """Pruebas de priorización de paradas y regla de las 18:45."""
 
     def _paradas(self):
         return [
@@ -21,26 +21,26 @@ class PriorizacionTests(unittest.TestCase):
             {'address': 'C', 'lat': 40.2, 'lng': -3.2, 'prioridad': 'media', 'estado': 'pendiente'},
         ]
 
-    def test_priorizar_antes_19_nearest_neighbor(self):
-        """Antes de las 19:00 el orden es nearest-neighbor (no por prioridad)."""
+    def test_priorizar_antes_1845_nearest_neighbor(self):
+        """Antes de las 18:45 el orden es nearest-neighbor (no por prioridad)."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=10)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=600)
         # B es el primero porque es el más cercano a A (primer elemento sin origen)
         self.assertIsInstance(ordenadas, list)
         self.assertEqual(len(ordenadas), 3)
 
-    def test_priorizar_a_las_19_prioridad_primero(self):
-        """A las 19:00 las paradas de alta prioridad deben aparecer primero."""
+    def test_priorizar_a_las_1845_prioridad_primero(self):
+        """A las 18:45 las paradas de alta prioridad deben aparecer primero."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=1125)
         prioridades = [p['prioridad'] for p in ordenadas]
         # alta debe ir antes que media y baja
         self.assertEqual(prioridades[0], 'alta')
 
-    def test_priorizar_despues_19_alta_media_baja(self):
+    def test_priorizar_despues_1845_alta_media_baja(self):
         """A las 20:00 el orden debe ser alta > media > baja."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=20)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=1200)
         prioridades = [p['prioridad'] for p in ordenadas]
         orden_esperado = sorted(prioridades, key=lambda p: {'alta': 0, 'media': 1, 'baja': 2}[p])
         self.assertEqual(prioridades, orden_esperado)
@@ -48,11 +48,11 @@ class PriorizacionTests(unittest.TestCase):
     def test_modo_invalido_usa_moto(self):
         """Modo desconocido debe tratarse como 'moto' sin error."""
         paradas = self._paradas()
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='bicicleta', hora_actual=10)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='bicicleta', hora_actual=600)
         self.assertEqual(len(ordenadas), 3)
 
     def test_paradas_vacias(self):
-        self.assertEqual(repartidor.priorizar_paradas([], hora_actual=19), [])
+        self.assertEqual(repartidor.priorizar_paradas([], hora_actual=1125), [])
 
 
 class AsignarPrioridadTests(unittest.TestCase):
@@ -102,11 +102,11 @@ class ModoTransporteTests(unittest.TestCase):
     def test_cambio_modo_recalcula_ruta(self):
         paradas = self._paradas_con_coords()
         url_moto = repartidor.generar_ruta_maps(
-            paradas, modo='moto', hora_actual=10,
+            paradas, modo='moto', hora_actual=600,
             origen_lat=39.9, origen_lng=-2.9,
         )
         url_pie = repartidor.generar_ruta_maps(
-            paradas, modo='pie', hora_actual=10,
+            paradas, modo='pie', hora_actual=600,
             origen_lat=39.9, origen_lng=-2.9,
         )
         self.assertIn('travelmode=driving', url_moto)
@@ -117,7 +117,7 @@ class ModoTransporteTests(unittest.TestCase):
         url = repartidor.generar_ruta_maps(
             self._paradas_con_coords(),
             modo='moto',
-            hora_actual=10,
+            hora_actual=600,
             origen_lat=39.9,
             origen_lng=-2.9,
         )
@@ -131,14 +131,14 @@ class ModoTransporteTests(unittest.TestCase):
     def test_generar_ruta_sin_coordenadas_validas(self):
         paradas = [{'address': 'X', 'prioridad': 'media'}]
         resultado = repartidor.generar_ruta_maps(
-            paradas, modo='coche', hora_actual=10,
+            paradas, modo='coche', hora_actual=600,
             origen_lat=40.0, origen_lng=-3.0,
         )
         self.assertIn('paradas sin coordenadas válidas', resultado)
 
     def test_generar_ruta_bloquea_origen_invalido(self):
         resultado = repartidor.generar_ruta_maps(
-            self._paradas_con_coords(), modo='coche', hora_actual=10
+            self._paradas_con_coords(), modo='coche', hora_actual=600
         )
         self.assertIn('ubicación de origen válida', resultado)
 
@@ -615,11 +615,18 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app = self._app()
         app.txt_busqueda.text = 'Calle Serrano 12'
         app._validar_y_anadir = MagicMock(return_value=True)
-        app.buscar_manual()
+        resultado = app.buscar_manual()
         app._validar_y_anadir.assert_called_once_with(
             'Calle Serrano 12', 'búsqueda'
         )
         self.assertEqual(app.txt_busqueda.text, '')
+        self.assertTrue(resultado)
+
+    def test_busqueda_manual_vacia_devuelve_false(self):
+        app = self._app()
+        resultado = app.buscar_manual()
+        self.assertFalse(resultado)
+        self.assertIn('Escribe una dirección', app.lbl_estado.text)
 
     def test_exactamente_tres_acciones_unicas_y_accesibles(self):
         self.assertEqual(len(main.STOP_ACTIONS), 3)
@@ -640,6 +647,33 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             {'buscar_manual', 'dictar_microfono', 'escanear_camara'},
         )
         self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
+        self.assertIn('📷', main.INTEGRATED_STOP_BUTTON_TEXT)
+        self.assertIn('🔍', main.INTEGRATED_STOP_BUTTON_TEXT)
+        self.assertIn('🎙', main.INTEGRATED_STOP_BUTTON_TEXT)
+
+    def test_busqueda_manual_desde_popup_cierra_selector_al_anadir(self):
+        app = self._app()
+        popup = types.SimpleNamespace(dismiss=MagicMock())
+        app._popup_acciones_parada = popup
+        app._validar_y_anadir = MagicMock(return_value=True)
+
+        app._buscar_manual_desde_popup(popup, types.SimpleNamespace(text='Calle Sol 8'))
+
+        app._validar_y_anadir.assert_called_once_with('Calle Sol 8', 'búsqueda')
+        popup.dismiss.assert_called_once_with()
+        self.assertIsNone(app._popup_acciones_parada)
+
+    def test_accion_integrada_cierra_popup_y_lanza_handler(self):
+        app = self._app()
+        popup = types.SimpleNamespace(dismiss=MagicMock())
+        app._popup_acciones_parada = popup
+        accion = MagicMock()
+
+        app._ejecutar_accion_integrada(popup, accion)
+
+        popup.dismiss.assert_called_once_with()
+        accion.assert_called_once_with()
+        self.assertIsNone(app._popup_acciones_parada)
 
     @patch('main.repartidor.buscar_direccion_texto')
     def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
@@ -905,31 +939,76 @@ class BuscarDireccionTests(unittest.TestCase):
         self.assertIsNone(parada)
 
 
-class ReglaHoraria19Tests(unittest.TestCase):
-    """Pruebas específicas para la regla de priorización a las 19:00."""
+class ApiKeyLoadingTests(unittest.TestCase):
+    def test_cargar_api_key_prioriza_variable_entorno(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {repartidor.API_KEY_ENV_VAR: 'ENV_KEY'},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "JSON_KEY"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), 'ENV_KEY')
 
-    def test_antes_19_no_aplica_prioridad_estricta(self):
+    def test_cargar_api_key_fallback_json_legacy_si_entorno_no_vale(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {repartidor.API_KEY_ENV_VAR: 'TU_API_KEY_AQUÍ'},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "JSON_KEY"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), 'JSON_KEY')
+
+    def test_cargar_api_key_devuelve_vacia_sin_env_ni_json_valido(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            self.assertEqual(repartidor.cargar_api_key(), '')
+
+    def test_cargar_api_key_ignora_placeholder_en_json_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            repartidor.os.environ,
+            {},
+            clear=True,
+        ), patch.object(repartidor, '__file__', str(Path(tmp) / 'repartidor.py')):
+            legacy_path = Path(tmp) / 'webServerApiSettings.json'
+            legacy_path.write_text('{"googleMapsApiKey": "TU_API_KEY_AQUÍ"}', encoding='utf-8')
+            self.assertEqual(repartidor.cargar_api_key(), '')
+
+    def test_repartidor_app_usa_api_key_resuelta_sin_recargar_archivos_locales(self):
+        with patch.object(repartidor, 'API_KEY', 'ENV_KEY'):
+            app = main.RepartidorApp()
+            self.assertEqual(app.api_key, 'ENV_KEY')
+
+
+class ReglaHoraria19Tests(unittest.TestCase):
+    """Pruebas específicas para la regla de priorización a las 18:45."""
+
+    def test_antes_1845_no_aplica_prioridad_estricta(self):
         paradas = [
             {'address': 'Baja', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja'},
             {'address': 'Alta', 'lat': 40.5, 'lng': -3.5, 'prioridad': 'alta'},
         ]
-        # Antes de las 19:00: el orden depende de nearest-neighbor, no de prioridad
-        result_18 = repartidor.priorizar_paradas(paradas, hora_actual=18)
-        result_19 = repartidor.priorizar_paradas(paradas, hora_actual=19)
-        # A las 19:00, alta debe ser primero
-        self.assertEqual(result_19[0]['prioridad'], 'alta')
-        # Los resultados pueden diferir entre 18:00 y 19:00
-        prioridades_19 = [p['prioridad'] for p in result_19]
-        self.assertEqual(prioridades_19[0], 'alta')
+        # Antes de las 18:45: el orden depende de nearest-neighbor, no de prioridad
+        result_antes = repartidor.priorizar_paradas(paradas, hora_actual=1080)  # 18:00
+        result_1845 = repartidor.priorizar_paradas(paradas, hora_actual=1125)  # 18:45
+        # A las 18:45, alta debe ser primero
+        self.assertEqual(result_1845[0]['prioridad'], 'alta')
+        # Los resultados pueden diferir entre 18:00 y 18:45
+        prioridades_1845 = [p['prioridad'] for p in result_1845]
+        self.assertEqual(prioridades_1845[0], 'alta')
 
-    def test_regla_19_grupos_optimizados(self):
+    def test_regla_1845_grupos_optimizados(self):
         """Dentro de cada grupo de prioridad se aplica nearest-neighbor."""
         paradas = [
             {'address': 'A1', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'alta'},
             {'address': 'A2', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta'},
             {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'baja'},
         ]
-        result = repartidor.priorizar_paradas(paradas, hora_actual=19)
+        result = repartidor.priorizar_paradas(paradas, hora_actual=1125)  # 18:45
         # Primero deben salir las dos de alta
         self.assertEqual(result[0]['prioridad'], 'alta')
         self.assertEqual(result[1]['prioridad'], 'alta')
@@ -950,15 +1029,187 @@ class LegacyCompatTests(unittest.TestCase):
     def test_generar_ruta_maps_sin_paradas(self):
         self.assertEqual(repartidor.generar_ruta_maps([], modo='moto'), 'No hay paradas')
 
-    def test_priorizar_paradas_orden_correcto_hora_19(self):
-        """Compatibilidad: alta primero a las 19:00."""
+    def test_priorizar_paradas_orden_correcto_hora_1845(self):
+        """Compatibilidad: alta primero a las 18:45."""
         paradas = [
             {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'baja'},
             {'address': 'B', 'lat': 1.1, 'lng': 1.1, 'prioridad': 'alta'},
             {'address': 'C', 'lat': 1.2, 'lng': 1.2, 'prioridad': 'media'},
         ]
-        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
+        ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=1125)
         self.assertEqual(ordenadas[0]['prioridad'], 'alta')
+
+
+class AuthTests(unittest.TestCase):
+    """Pruebas del módulo de autenticación (auth.py)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    # -- registro ----------------------------------------------------------
+
+    def test_register_nuevo_usuario_devuelve_true(self):
+        import auth
+        self.assertTrue(auth.register_user(self.tmp, 'ana', 'secreto'))
+
+    def test_register_usuario_duplicado_devuelve_false(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertFalse(auth.register_user(self.tmp, 'ana', 'otra'))
+
+    def test_register_usuario_vacio_lanza_valueerror(self):
+        import auth
+        with self.assertRaises(ValueError):
+            auth.register_user(self.tmp, '  ', 'clave')
+
+    def test_register_contrasena_vacia_lanza_valueerror(self):
+        import auth
+        with self.assertRaises(ValueError):
+            auth.register_user(self.tmp, 'ana', '')
+
+    # -- verificación -------------------------------------------------------
+
+    def test_verify_credenciales_correctas(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertTrue(auth.verify_user(self.tmp, 'ana', 'secreto'))
+
+    def test_verify_contrasena_incorrecta(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'secreto')
+        self.assertFalse(auth.verify_user(self.tmp, 'ana', 'mala'))
+
+    def test_verify_usuario_inexistente(self):
+        import auth
+        self.assertFalse(auth.verify_user(self.tmp, 'nadie', 'clave'))
+
+    # -- tipo de cuenta -----------------------------------------------------
+
+    def test_cuenta_nueva_es_trial_por_defecto(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        self.assertEqual(auth.get_account_type(self.tmp, 'ana'), auth.ACCOUNT_TRIAL)
+        self.assertTrue(auth.is_trial(self.tmp, 'ana'))
+
+    def test_upgrade_to_full_cambia_tipo(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        auth.upgrade_to_full(self.tmp, 'ana')
+        self.assertEqual(auth.get_account_type(self.tmp, 'ana'), auth.ACCOUNT_FULL)
+        self.assertFalse(auth.is_trial(self.tmp, 'ana'))
+
+    def test_upgrade_usuario_inexistente_devuelve_false(self):
+        import auth
+        self.assertFalse(auth.upgrade_to_full(self.tmp, 'nadie'))
+
+    def test_register_cuenta_full_directamente(self):
+        import auth
+        auth.register_user(self.tmp, 'admin', 'clave', account_type=auth.ACCOUNT_FULL)
+        self.assertFalse(auth.is_trial(self.tmp, 'admin'))
+
+    def test_has_any_user_sin_usuarios(self):
+        import auth
+        self.assertFalse(auth.has_any_user(self.tmp))
+
+    def test_has_any_user_con_usuario(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        self.assertTrue(auth.has_any_user(self.tmp))
+
+    # -- persistencia -------------------------------------------------------
+
+    def test_datos_persisten_entre_llamadas(self):
+        import auth
+        auth.register_user(self.tmp, 'ana', 'clave')
+        # Simula que se recarga la app
+        self.assertTrue(auth.verify_user(self.tmp, 'ana', 'clave'))
+        self.assertTrue(auth.user_exists(self.tmp, 'ana'))
+
+
+class TrialLimitTests(unittest.TestCase):
+    """Pruebas del límite de paradas en versión prueba."""
+
+    def _app_trial(self, tmp):
+        """Crea una RepartidorApp con usuario trial registrado."""
+        import auth
+        auth.register_user(tmp, 'repartidor', 'clave')
+        app = main.RepartidorApp()
+        app.user_data_dir = tmp
+        app._usuario_actual = 'repartidor'
+        return app
+
+    def test_es_cuenta_trial_sin_usuario(self):
+        app = main.RepartidorApp()
+        app.user_data_dir = tempfile.mkdtemp()
+        app._usuario_actual = None
+        self.assertFalse(app._es_cuenta_trial())
+
+    def test_es_cuenta_trial_con_usuario_trial(self):
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        self.assertTrue(app._es_cuenta_trial())
+
+    def test_es_cuenta_trial_con_usuario_full(self):
+        import auth
+        tmp = tempfile.mkdtemp()
+        auth.register_user(tmp, 'pro', 'clave', account_type=auth.ACCOUNT_FULL)
+        app = main.RepartidorApp()
+        app.user_data_dir = tmp
+        app._usuario_actual = 'pro'
+        self.assertFalse(app._es_cuenta_trial())
+
+    def test_validar_y_anadir_bloquea_al_llegar_al_limite(self):
+        """Con 15 paradas en lista, la siguiente es rechazada en modo trial."""
+        import auth
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        # Rellenar la lista hasta el límite con paradas ficticias
+        for i in range(auth.TRIAL_MAX_PARADAS):
+            app.lista_paradas.append({
+                'address': f'Calle Falsa {i}',
+                'lat': 40.0 + i * 0.01,
+                'lng': -3.0,
+                'estado': 'geolocalizada',
+                'prioridad': 'media',
+            })
+        resultado = app._validar_y_anadir('Calle Nueva 1, Madrid', 'test')
+        self.assertFalse(resultado)
+        self.assertEqual(len(app.lista_paradas), auth.TRIAL_MAX_PARADAS)
+
+    def test_validar_y_anadir_permite_parada_antes_del_limite(self):
+        """Con menos de 15 paradas en lista trial, la adición sigue su curso."""
+        import auth
+        tmp = tempfile.mkdtemp()
+        app = self._app_trial(tmp)
+        # 14 paradas — debería poder añadir una más (geocodificación mock)
+        for i in range(auth.TRIAL_MAX_PARADAS - 1):
+            app.lista_paradas.append({
+                'address': f'Calle Falsa {i}',
+                'lat': 40.0 + i * 0.01,
+                'lng': -3.0,
+                'estado': 'geolocalizada',
+                'prioridad': 'media',
+            })
+        with patch('repartidor.buscar_direccion_texto', return_value=None):
+            resultado = app._validar_y_anadir('Calle Real 100, Madrid', 'test')
+        self.assertTrue(resultado)
+
+
+class OpenMapUrlTests(unittest.TestCase):
+    """Pruebas del comportamiento de open_map_url en entorno de escritorio."""
+
+    def test_no_android_abre_con_webbrowser(self):
+        """En escritorio debe llamar a webbrowser.open, no al error callback."""
+        errores = []
+        with patch('android_services.is_android', return_value=False), \
+             patch('webbrowser.open') as mock_open:
+            result = android_services.open_map_url(
+                'https://maps.google.com/?q=test',
+                lambda msg: errores.append(msg),
+            )
+        self.assertTrue(result)
+        mock_open.assert_called_once()
+        self.assertEqual(errores, [])
 
 
 if __name__ == '__main__':

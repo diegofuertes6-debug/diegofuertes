@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/enrrutador-prioridades
+      - '**'
+  pull_request:
 
 jobs:
   build-android:
