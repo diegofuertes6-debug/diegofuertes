@@ -802,6 +802,59 @@ class SelectoresEntregaTests(unittest.TestCase):
         self.assertIn('Cartas: Ordinaria', app.lbl_estado.text)
 
 
+class NavegacionEntregaParadasTests(unittest.TestCase):
+    def _app(self):
+        app = main.RepartidorApp()
+        app.lbl_estado = types.SimpleNamespace(text='')
+        app.lista_widget = None
+        app.btn_ruta = types.SimpleNamespace(text='🗺 VER RUTA EN MAPS', disabled=False)
+        app.spinner_modo = types.SimpleNamespace(text='Moto')
+        app._ubicacion_actual = {'lat': 40.4, 'lng': -3.7}
+        app.lista_paradas = [{
+            'address': 'Calle Mayor 1',
+            'lat': 40.5,
+            'lng': -3.8,
+            'estado': 'pendiente',
+            'prioridad': 'media',
+        }]
+        return app
+
+    def test_marcar_entregado_y_recuperar_vuelven_a_pendiente(self):
+        app = self._app()
+        app._marcar_entregado(0)
+        self.assertEqual(app.lista_paradas[0]['estado'], 'entregado')
+
+        app._recuperar_parada(0)
+        self.assertEqual(app.lista_paradas[0]['estado'], 'pendiente')
+
+    def test_saltar_parada_mantiene_pendiente_y_marca_saltada(self):
+        app = self._app()
+        app._saltar_parada(0)
+        self.assertEqual(app.lista_paradas[0]['estado'], 'pendiente')
+        self.assertTrue(app.lista_paradas[0].get('saltada'))
+
+    def test_iniciar_navegacion_usa_maps_para_indice_especifico(self):
+        app = self._app()
+        app._abrir_maps_ubicacion = MagicMock()
+        app._iniciar_navegacion(0)
+        app._abrir_maps_ubicacion.assert_called_once_with(40.5, -3.8)
+        self.assertEqual(app._indice_parada_actual, 0)
+
+    @patch('main.webbrowser.open')
+    @patch('main.android_services.open_map_url')
+    @patch('main.android_services.is_location_enabled', return_value=True)
+    @patch('main.android_services.is_android', return_value=True)
+    def test_abrir_maps_activa_modo_navegacion_y_cambia_boton(
+        self, _android, _enabled, abrir_maps, _navegador
+    ):
+        app = self._app()
+        app.abrir_google_maps()
+
+        abrir_maps.assert_called_once()
+        self.assertTrue(app._modo_navegacion)
+        self.assertEqual(app.btn_ruta.text, '🔄 VOLVER A OPTIMIZAR')
+
+
 class InicioUbicacionTests(unittest.TestCase):
     def _app(self):
         app = main.RepartidorApp()

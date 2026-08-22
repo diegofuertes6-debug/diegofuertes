@@ -89,6 +89,8 @@ class RepartidorApp(App if App is not object else object):
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
         self._open_map_when_located = False
+        self._modo_navegacion = False
+        self._indice_parada_actual = None
 
     # ------------------------------------------------------------------
     # Legacy API key loader (compatible con el JSON existente)
@@ -768,6 +770,63 @@ class RepartidorApp(App if App is not object else object):
         """Compatibility wrapper for callers using the former shared path."""
         return self._validar_y_anadir(texto, 'entrada')
 
+    def _iniciar_navegacion(self, indice):
+        if not (0 <= indice < len(self.lista_paradas)):
+            return
+        parada = self.lista_paradas[indice]
+        if not repartidor.coordenadas_validas(parada.get('lat'), parada.get('lng')):
+            self._set_estado('Esta parada no tiene coordenadas válidas para navegar.')
+            return
+        parada.pop('saltada', None)
+        self._indice_parada_actual = indice
+        self._set_estado(f'Navegando a: {parada.get("address", "Sin dirección")}')
+        self._abrir_maps_ubicacion(parada.get('lat'), parada.get('lng'))
+
+    def _marcar_entregado(self, indice):
+        if not (0 <= indice < len(self.lista_paradas)):
+            return
+        parada = self.lista_paradas[indice]
+        parada['estado'] = 'entregado'
+        parada.pop('saltada', None)
+        self._set_estado(f'Entregado: {parada.get("address", "Sin dirección")}')
+        self._refrescar_lista()
+
+    def _recuperar_parada(self, indice):
+        if not (0 <= indice < len(self.lista_paradas)):
+            return
+        parada = self.lista_paradas[indice]
+        parada['estado'] = 'pendiente'
+        parada.pop('saltada', None)
+        self._set_estado(f'Recuperada: {parada.get("address", "Sin dirección")}')
+        self._refrescar_lista()
+
+    def _saltar_parada(self, indice):
+        if not (0 <= indice < len(self.lista_paradas)):
+            return
+        parada = self.lista_paradas[indice]
+        parada['estado'] = 'pendiente'
+        parada['saltada'] = True
+        self._set_estado(f'Saltada: {parada.get("address", "Sin dirección")}')
+        self._refrescar_lista()
+
+    def _activar_modo_navegacion(self):
+        self._modo_navegacion = True
+        self._indice_parada_actual = None
+        if self.btn_ruta is not None:
+            self.btn_ruta.text = '🔄 VOLVER A OPTIMIZAR'
+        self._set_estado(
+            'Modo navegación activo. Puedes navegar, marcar entregadas o saltar paradas.'
+        )
+        self._refrescar_lista()
+
+    def _desactivar_modo_navegacion(self):
+        self._modo_navegacion = False
+        self._indice_parada_actual = None
+        if self.btn_ruta is not None:
+            self.btn_ruta.text = '🗺 VER RUTA EN MAPS'
+        self._set_estado('Modo edición activo.')
+        self._refrescar_lista()
+
     def _refrescar_lista(self):
         if self.lista_widget is None:
             return
@@ -779,59 +838,153 @@ class RepartidorApp(App if App is not object else object):
         origen_lng = loc.get('lng')
         hora = _hora_actual()
 
-        paradas_ord = repartidor.priorizar_paradas(
-            self.lista_paradas, modo=modo,
-            hora_actual=hora,
-            origen_lat=origen_lat, origen_lng=origen_lng,
-        )
+        if self._modo_navegacion:
+            paradas_ord = list(self.lista_paradas)
+        else:
+            paradas_ord = repartidor.priorizar_paradas(
+                self.lista_paradas, modo=modo,
+                hora_actual=hora,
+                origen_lat=origen_lat, origen_lng=origen_lng,
+            )
+        indices_paradas = {
+            id(parada): indice for indice, parada in enumerate(self.lista_paradas)
+        }
 
         for idx, parada in enumerate(paradas_ord):
             estado = parada.get('estado', 'pendiente')
-            fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
             color = repartidor.PRIORITY_COLORS.get(
                 parada.get('prioridad', 'media'),
                 repartidor.PRIORITY_COLORS['media'],
             )
-            lbl = Label(
-                text=(
-                    f"[{parada.get('prioridad','?')}] "
-                    f"{parada.get('address','Sin dirección')}\n"
-                    f"Estado: {estado}"
-                ),
-                halign='left',
-                font_size='12sp',
-                size_hint_x=0.65 if estado == 'error' else 0.8,
-                text_size=(None, None),
-                color=color,
-            )
-            btn_del = Button(
-                text='✕',
-                size_hint_x=0.15 if estado == 'error' else 0.2,
-                background_normal='',
-                background_color=color,
-            )
-            real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
-            btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
-            fila.add_widget(lbl)
-            if estado == 'error':
-                btn_retry = Button(text='↻', size_hint_x=0.1)
-                btn_edit = Button(text='✎', size_hint_x=0.1)
-                btn_retry.bind(
-                    on_press=lambda _btn, p=parada: self._reintentar_geocodificacion(p)
+            real_idx = indices_paradas.get(id(parada), -1)
+            if real_idx < 0 and parada in self.lista_paradas:
+                real_idx = self.lista_paradas.index(parada)
+            if self._modo_navegacion:
+                fila = BoxLayout(size_hint_y=None, height='56dp', spacing=4)
+                if estado == 'entregado':
+                    lbl = Label(
+                        text=f'✅ {parada.get("address", "Sin dirección")}',
+                        halign='left',
+                        font_size='12sp',
+                        size_hint_x=0.7,
+                        text_size=(None, None),
+                        color=(0.6, 0.6, 0.6, 1),
+                    )
+                    btn_recuperar = Button(
+                        text='↩',
+                        size_hint_x=0.15,
+                        background_normal='',
+                        background_color=(0.2, 0.7, 0.3, 1),
+                    )
+                    btn_eliminar = Button(
+                        text='✕',
+                        size_hint_x=0.15,
+                        background_normal='',
+                        background_color=(0.8, 0.1, 0.1, 1),
+                    )
+                    btn_recuperar.bind(
+                        on_press=lambda _btn, i=real_idx: self._recuperar_parada(i)
+                    )
+                    btn_eliminar.bind(
+                        on_press=lambda _btn, i=real_idx: self._eliminar_parada(i)
+                    )
+                    fila.add_widget(lbl)
+                    fila.add_widget(btn_recuperar)
+                    fila.add_widget(btn_eliminar)
+                else:
+                    etiqueta_salto = ' (saltada)' if parada.get('saltada') else ''
+                    lbl = Label(
+                        text=(
+                            f'{idx + 1} | {parada.get("address", "Sin dirección")} '
+                            f'[{parada.get("prioridad", "?")}]'
+                            f'{etiqueta_salto}'
+                        ),
+                        halign='left',
+                        font_size='11sp',
+                        size_hint_x=0.55,
+                        text_size=(None, None),
+                        color=color,
+                    )
+                    btn_navegar = Button(
+                        text='🚗',
+                        size_hint_x=0.15,
+                        background_normal='',
+                        background_color=(0.1, 0.6, 0.9, 1),
+                    )
+                    btn_entregado = Button(
+                        text='✓',
+                        size_hint_x=0.15,
+                        background_normal='',
+                        background_color=(0.2, 0.7, 0.3, 1),
+                    )
+                    btn_saltar = Button(
+                        text='⤵',
+                        size_hint_x=0.15,
+                        background_normal='',
+                        background_color=(0.95, 0.55, 0.1, 1),
+                    )
+                    btn_navegar.bind(
+                        on_press=lambda _btn, i=real_idx: self._iniciar_navegacion(i)
+                    )
+                    btn_entregado.bind(
+                        on_press=lambda _btn, i=real_idx: self._marcar_entregado(i)
+                    )
+                    btn_saltar.bind(
+                        on_press=lambda _btn, i=real_idx: self._saltar_parada(i)
+                    )
+                    fila.add_widget(lbl)
+                    fila.add_widget(btn_navegar)
+                    fila.add_widget(btn_entregado)
+                    fila.add_widget(btn_saltar)
+            else:
+                fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
+                lbl = Label(
+                    text=(
+                        f"[{parada.get('prioridad','?')}] "
+                        f"{parada.get('address','Sin dirección')}\n"
+                        f"Estado: {estado}"
+                    ),
+                    halign='left',
+                    font_size='12sp',
+                    size_hint_x=0.65 if estado == 'error' else 0.8,
+                    text_size=(None, None),
+                    color=color,
                 )
-                btn_edit.bind(
-                    on_press=lambda _btn, p=parada: self._corregir_parada(p)
+                btn_del = Button(
+                    text='✕',
+                    size_hint_x=0.15 if estado == 'error' else 0.2,
+                    background_normal='',
+                    background_color=color,
                 )
-                fila.add_widget(btn_retry)
-                fila.add_widget(btn_edit)
-            fila.add_widget(btn_del)
+                btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
+                fila.add_widget(lbl)
+                if estado == 'error':
+                    btn_retry = Button(text='↻', size_hint_x=0.1)
+                    btn_edit = Button(text='✎', size_hint_x=0.1)
+                    btn_retry.bind(
+                        on_press=lambda _btn, p=parada: self._reintentar_geocodificacion(p)
+                    )
+                    btn_edit.bind(
+                        on_press=lambda _btn, p=parada: self._corregir_parada(p)
+                    )
+                    fila.add_widget(btn_retry)
+                    fila.add_widget(btn_edit)
+                fila.add_widget(btn_del)
             self.lista_widget.add_widget(fila)
 
         if self.btn_ruta is not None:
             self.btn_ruta.disabled = not bool(self.lista_paradas)
+            self.btn_ruta.text = (
+                '🔄 VOLVER A OPTIMIZAR'
+                if self._modo_navegacion else '🗺 VER RUTA EN MAPS'
+            )
 
     def _eliminar_parada(self, indice):
         repartidor.eliminar_parada(self.lista_paradas, indice)
+        if not self.lista_paradas:
+            self._modo_navegacion = False
+            self._indice_parada_actual = None
+            self._set_estado('Sin paradas. Modo edición activo.')
         self._refrescar_lista()
 
     def _on_modo_cambio(self, *_args):
@@ -897,15 +1050,25 @@ class RepartidorApp(App if App is not object else object):
             return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
-        url = repartidor.generar_ruta_maps(
+        hora_actual = _hora_actual()
+        paradas_optimizadas = repartidor.priorizar_paradas(
             self.lista_paradas,
             modo=modo,
-            hora_actual=_hora_actual(),
+            hora_actual=hora_actual,
+            origen_lat=loc.get('lat'),
+            origen_lng=loc.get('lng'),
+        )
+        url = repartidor.generar_ruta_maps(
+            paradas_optimizadas,
+            modo=modo,
+            hora_actual=hora_actual,
             origen_lat=loc.get('lat'),
             origen_lng=loc.get('lng'),
         )
         if url.startswith('http'):
             self._open_map_when_located = False
+            self.lista_paradas = list(paradas_optimizadas)
+            self._activar_modo_navegacion()
             if android_services.is_android():
                 android_services.open_map_url(url, self._set_estado)
             else:
