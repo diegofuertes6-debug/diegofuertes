@@ -11,7 +11,7 @@ class ListPresenter:
         prefix = StopId.type_prefix(stop_type)
         number = stop.get("id") or stop.get("code") or "1"
         if not str(number).startswith(prefix):
-            return f"{prefix}{str(number).lstrip(prefix)}"
+            return f"{prefix}{number}"
         return str(number)
 
     @staticmethod

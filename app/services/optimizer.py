@@ -13,11 +13,23 @@ def is_after_cutoff(now: datetime) -> bool:
 
 
 def optimize_initial(stops: Iterable[dict]) -> List[dict]:
-    """Sin prioridad: devuelve la secuencia más corta por distancia."""
+    """Sin prioridad: devuelve la secuencia más corta por distancia.
+
+    Stops that have no valid coordinates are preserved and appended at the
+    end of the returned list unchanged.
+    """
     items = [stop for stop in stops if isinstance(stop, dict)]
     if not items:
         return []
-    valid = [stop for stop in items if isinstance(stop.get("lat"), (int, float)) and isinstance(stop.get("lng"), (int, float))]
+
+    valid = []
+    no_coords = []
+    for stop in items:
+        if isinstance(stop.get("lat"), (int, float)) and isinstance(stop.get("lng"), (int, float)):
+            valid.append(stop)
+        else:
+            no_coords.append(stop)
+
     if not valid:
         return list(items)
 
@@ -28,7 +40,7 @@ def optimize_initial(stops: Iterable[dict]) -> List[dict]:
         next_stop = min(remaining, key=lambda stop: distance_km(current, stop))
         ordered.append(next_stop)
         remaining.remove(next_stop)
-    return ordered
+    return ordered + no_coords
 
 
 def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List[dict]:

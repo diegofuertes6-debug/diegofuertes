@@ -29,9 +29,12 @@ class StopId:
             stop_type = str(stop.get("type", "notificacion")).strip().lower()
             prefix = cls.type_prefix(stop_type)
             counters[prefix] += 1
-            stop["id"] = f"{prefix}{counters[prefix]}"
-            stop["type"] = "notificacion" if prefix == "N" else "paquete"
-            numbered.append(stop)
+            updated = {
+                **stop,
+                "id": f"{prefix}{counters[prefix]}",
+                "type": "notificacion" if prefix == "N" else "paquete",
+            }
+            numbered.append(updated)
         cls._last_ids = {"N": counters["N"], "P": counters["P"]}
         return numbered
 
