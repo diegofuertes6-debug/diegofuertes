@@ -37,8 +37,8 @@ PRIORITY_COLORS = {
     'media': (1.0, 0.5, 0.0, 1.0),
     'baja': (0.0, 1.0, 0.0, 1.0),
 }
-PACKAGE_OPTIONS = ('Urgente', 'Normal')
-DEFAULT_PACKAGE = 'Normal'
+PACKAGE_OPTIONS = ('Grande', 'Mediano', 'Pequeño')
+DEFAULT_PACKAGE = 'Grande'
 LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
 DEFAULT_LETTER = 'Sin cartas'
 
@@ -395,12 +395,14 @@ def asignar_prioridad(parada, prioridad):
 
 
 def normalizar_paqueteria(valor):
-    """Normalize current and legacy package values to the two supported options."""
+    """Normalize package size values to the three supported options."""
     texto = normalizar_direccion(valor).casefold()
-    if texto == 'urgente' or any(
-        marca in texto for marca in ('express', '24 h', '24h', 'prioritari')
-    ):
-        return 'Urgente'
+    if texto in ('grande', 'large', 'big', 'gran'):
+        return 'Grande'
+    if texto in ('mediano', 'medium'):
+        return 'Mediano'
+    if texto in ('pequeño', 'pequeno', 'small', 'chico'):
+        return 'Pequeño'
     return DEFAULT_PACKAGE
 
 
