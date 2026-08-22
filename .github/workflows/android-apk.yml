@@ -83,12 +83,12 @@ jobs:
 
       - name: Validate generated APK
         run: |
-          count=$(find bin -maxdepth 1 -type f -name "*-debug.apk" | wc -l | tr -d ' ')
-          if [ "$count" -lt 1 ]; then
+          mapfile -t apks < <(find bin -maxdepth 1 -type f -name "*-debug.apk")
+          if [ "${#apks[@]}" -lt 1 ]; then
             echo "No debug APK generated in bin/."
             exit 1
           fi
-          find bin -maxdepth 1 -type f -name "*-debug.apk" -print
+          printf '%s\n' "${apks[@]}"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
