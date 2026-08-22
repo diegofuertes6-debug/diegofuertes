@@ -757,6 +757,7 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app._on_ubicacion({'lat': 40.4, 'lng': -3.7})
 
         self.assertFalse(app._open_map_when_located)
+        self.assertFalse(app._abrir_maps_con_deposito)
         app.abrir_google_maps.assert_called_once_with()
 
     def test_primera_geolocalizacion_abre_maps_con_deposito_una_vez(self):

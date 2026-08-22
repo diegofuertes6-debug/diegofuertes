@@ -386,8 +386,9 @@ class RepartidorApp(App if App is not object else object):
             'La ruta saldrá y volverá exactamente aquí.'
         )
         self._refrescar_lista()
-        if self._abrir_maps_con_deposito and not self._open_map_when_located:
-            self._abrir_maps_con_deposito = False
+        abrir_maps_con_deposito = self._abrir_maps_con_deposito
+        self._abrir_maps_con_deposito = False
+        if abrir_maps_con_deposito and not self._open_map_when_located:
             self._abrir_maps_ubicacion(loc['lat'], loc['lng'])
         if self._open_map_when_located:
             self._open_map_when_located = False
