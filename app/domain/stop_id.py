@@ -20,7 +20,7 @@ class StopId:
             return "Pp"
         if normalized_size in {"grande", "large"}:
             return "PG"
-        if normalized_size in {"mediano", "medio", "median", "medium"}:
+        if normalized_size in {"mediano", "medio", "medium"}:
             return "Pm"
 
         if normalized_type in {"pp", "paquete_pequeno", "paquete pequeño"}:
