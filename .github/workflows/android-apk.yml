@@ -82,6 +82,7 @@ jobs:
           buildozer android debug
 
       - name: Validate generated APK
+        shell: bash
         run: |
           mapfile -t apks < <(find bin -maxdepth 1 -type f -name "*-debug.apk")
           if [ "${#apks[@]}" -lt 1 ]; then
