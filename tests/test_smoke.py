@@ -750,6 +750,7 @@ class FlujosEntradaParadaTests(unittest.TestCase):
 
     def test_maps_se_abre_automaticamente_al_recibir_gps_pendiente(self):
         app = self._app()
+        app._abrir_maps_con_deposito = False
         app._open_map_when_located = True
         app.abrir_google_maps = MagicMock()
 
@@ -757,6 +758,16 @@ class FlujosEntradaParadaTests(unittest.TestCase):
 
         self.assertFalse(app._open_map_when_located)
         app.abrir_google_maps.assert_called_once_with()
+
+    def test_primera_geolocalizacion_abre_maps_con_deposito_una_vez(self):
+        app = self._app()
+        app._abrir_maps_ubicacion = MagicMock()
+
+        app._on_ubicacion({'lat': 40.4, 'lng': -3.7})
+        app._on_ubicacion({'lat': 40.5, 'lng': -3.8})
+
+        self.assertFalse(app._abrir_maps_con_deposito)
+        app._abrir_maps_ubicacion.assert_called_once_with(40.4, -3.7)
 
 
 class SelectoresEntregaTests(unittest.TestCase):
