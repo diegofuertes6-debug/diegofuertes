@@ -488,6 +488,17 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             for parada in app.lista_paradas
         ))
 
+    def test_detecta_paradas_pendientes_o_invalidas(self):
+        app = self._app()
+        app.lista_paradas = [
+            {'address': 'A', 'estado': 'geolocalizando'},
+            {'address': 'B', 'estado': 'geolocalizada', 'lat': 40.4, 'lng': -3.7},
+            {'address': 'C', 'estado': 'error'},
+        ]
+        pendientes = app._paradas_pendientes_o_invalidas()
+        self.assertEqual(len(pendientes), 2)
+        self.assertEqual({p['address'] for p in pendientes}, {'A', 'C'})
+
     @patch('main.webbrowser.open')
     @patch('main.android_services.is_android', return_value=True)
     def test_optimizacion_bloquea_gps_y_paradas_sin_coordenadas(
@@ -706,6 +717,24 @@ class BuscarDireccionTests(unittest.TestCase):
         mock_requests.get.return_value = mock_resp
         parada = repartidor.buscar_direccion_texto('LugarImaginario XYZ')
         self.assertIsNone(parada)
+
+    @patch('repartidor.requests')
+    @patch('repartidor.API_KEY', 'TEST_KEY')
+    def test_buscar_direccion_reintenta_unknown_error(self, mock_requests):
+        primer_resp = MagicMock()
+        primer_resp.json.return_value = {'status': 'UNKNOWN_ERROR', 'results': []}
+        segundo_resp = MagicMock()
+        segundo_resp.json.return_value = {
+            'status': 'OK',
+            'results': [{
+                'geometry': {'location': {'lat': 40.4, 'lng': -3.7}},
+                'formatted_address': 'Madrid, España',
+            }],
+        }
+        mock_requests.get.side_effect = [primer_resp, segundo_resp]
+        parada = repartidor.buscar_direccion_texto('Madrid')
+        self.assertIsNotNone(parada)
+        self.assertEqual(mock_requests.get.call_count, 2)
 
 
 class ReglaHoraria19Tests(unittest.TestCase):

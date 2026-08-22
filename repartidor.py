@@ -40,6 +40,7 @@ PACKAGE_OPTIONS = ('Pequeño', 'Mediano', 'Grande')
 DEFAULT_PACKAGE = 'Mediano'
 LETTER_OPTIONS = ('Cartas',)
 DEFAULT_LETTER = 'Cartas'
+GEOCODE_RETRYABLE_STATUS = {'UNKNOWN_ERROR'}
 
 try:
     from dotenv import load_dotenv
@@ -670,15 +671,28 @@ def buscar_direccion_texto(texto):
 
     url = 'https://maps.googleapis.com/maps/api/geocode/json'
     params = {'address': texto, 'key': API_KEY}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        res = resp.json()
-    except Exception as exc:
-        print(f'Error al geocodificar "{texto}": {exc}')
+    res = None
+    for intento in range(2):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            res = resp.json()
+        except Exception as exc:
+            if intento == 1:
+                print(f'Error al geocodificar "{texto}": {exc}')
+                return None
+            continue
+
+        status = str(res.get('status', '')).upper()
+        if status in GEOCODE_RETRYABLE_STATUS and intento == 0:
+            continue
+        break
+
+    if not isinstance(res, dict):
         return None
 
-    if res.get('status') == 'OK' and res.get('results'):
+    status = str(res.get('status', '')).upper()
+    if status == 'OK' and res.get('results'):
         loc = res['results'][0]['geometry']['location']
         return {
             'lat': loc['lat'],
@@ -687,7 +701,10 @@ def buscar_direccion_texto(texto):
             'prioridad': 'media',
             'estado': 'pendiente',
         }
-    print(f'No se encontraron resultados para "{texto}".')
+    if status == 'ZERO_RESULTS':
+        print(f'No se encontraron resultados para "{texto}".')
+    else:
+        print(f'No se pudo geocodificar "{texto}" (status: {status or "desconocido"}).')
     return None
 
 

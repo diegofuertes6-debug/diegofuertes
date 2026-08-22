@@ -652,6 +652,9 @@ class RepartidorApp(App if App is not object else object):
         if self.lista_widget is None:
             return
         self.lista_widget.clear_widgets()
+        index_by_object = {
+            id(parada): indice for indice, parada in enumerate(self.lista_paradas)
+        }
 
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
@@ -690,7 +693,7 @@ class RepartidorApp(App if App is not object else object):
                 background_normal='',
                 background_color=color,
             )
-            real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
+            real_idx = index_by_object.get(id(parada), -1)
             btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
             fila.add_widget(lbl)
             if estado == 'error':
@@ -708,7 +711,10 @@ class RepartidorApp(App if App is not object else object):
             self.lista_widget.add_widget(fila)
 
         if self.btn_ruta is not None:
-            self.btn_ruta.disabled = not bool(self.lista_paradas)
+            self.btn_ruta.disabled = (
+                not bool(self.lista_paradas)
+                or bool(self._paradas_pendientes_o_invalidas())
+            )
 
     def _eliminar_parada(self, indice):
         repartidor.eliminar_parada(self.lista_paradas, indice)
@@ -755,13 +761,7 @@ class RepartidorApp(App if App is not object else object):
             self._set_estado('Obteniendo la posición GPS actual antes de abrir la ruta…')
             self.solicitar_ubicacion()
             return
-        pendientes = [
-            parada for parada in self.lista_paradas
-            if parada.get('estado') == 'geolocalizando'
-            or not repartidor.coordenadas_validas(
-                parada.get('lat'), parada.get('lng')
-            )
-        ]
+        pendientes = self._paradas_pendientes_o_invalidas()
         if pendientes:
             estados = {parada.get('estado') for parada in pendientes}
             if 'geolocalizando' in estados:
@@ -799,6 +799,16 @@ class RepartidorApp(App if App is not object else object):
     def _set_estado(self, texto):
         if self.lbl_estado is not None:
             self.lbl_estado.text = str(texto)
+
+    def _paradas_pendientes_o_invalidas(self):
+        return [
+            parada
+            for parada in self.lista_paradas
+            if parada.get('estado') == 'geolocalizando'
+            or not repartidor.coordenadas_validas(
+                parada.get('lat'), parada.get('lng')
+            )
+        ]
 
     @staticmethod
     def _ejecutar_en_segundo_plano(callback):
