@@ -12,12 +12,23 @@ htmlcov/
 .vscode/
 .idea/
 
-# Local runtime files
+# Local runtime files — NEVER commit real API keys or secrets
 .env
+.env.*
+!.env.example
 users.json
 webServerApiSettings.json
 bin/*.apk
 bin/*.aab
+
+# Android signing keys
+*.jks
+*.keystore
+
+# Build logs
+build.log
+build.exit
+*.log
 
 # Virtual environments
 .venv/
