@@ -57,7 +57,8 @@ jobs:
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-33" \
-            "build-tools;33.0.2"
+            "build-tools;33.0.2" \
+            "build-tools;37.0.0"
 
           test -x "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
           test -x "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl"
@@ -76,6 +77,9 @@ jobs:
 
       - name: Build APK
         run: |
+          # Point Buildozer at the pre-installed SDK so it reuses the one
+          # where all licenses have already been accepted.
+          sed -i "s|^android.sdk_path =.*|android.sdk_path = $ANDROID_SDK_ROOT|" buildozer.spec
           buildozer android debug
 
       - name: Prepare artifact
