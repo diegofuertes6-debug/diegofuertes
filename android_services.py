@@ -280,13 +280,17 @@ def start_speech_recognition(on_success, on_error):
             activity.unbind(on_activity_result=on_activity_result)
             _speech_callback = None
             if result_code != -1 or data is None:
-                on_error('No se recibió ninguna dirección por voz.')
+                _dispatch(on_error, 'No se recibió ninguna dirección por voz.')
                 return
             results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
             if results is None or results.size() == 0:
-                on_error('No se reconoció ninguna dirección.')
+                _dispatch(on_error, 'No se reconoció ninguna dirección.')
                 return
-            on_success(str(results.get(0)).strip())
+            texto = str(results.get(0)).strip()
+            if not texto:
+                _dispatch(on_error, 'No se reconoció ninguna dirección.')
+                return
+            _dispatch(on_success, texto)
 
         _speech_callback = on_activity_result
         activity.bind(on_activity_result=on_activity_result)
@@ -297,7 +301,7 @@ def start_speech_recognition(on_success, on_error):
         except Exception:
             pass
         _speech_callback = None
-        on_error(f'El reconocimiento de voz no está disponible: {exc}')
+        _dispatch(on_error, f'El reconocimiento de voz no está disponible: {exc}')
 
 
 def cancel_pending_activities():

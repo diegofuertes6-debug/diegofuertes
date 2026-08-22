@@ -429,6 +429,15 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             ['Gran Vía 28, Madrid'], 'micrófono'
         )
 
+    @patch('main.android_services.is_android', return_value=False)
+    def test_microfono_vacio_muestra_error(self, _android):
+        app = self._app()
+        app._mostrar_confirmacion = MagicMock()
+        with patch('main.repartidor.dictar_direccion', return_value='  '):
+            app.dictar_microfono()
+        app._mostrar_confirmacion.assert_not_called()
+        self.assertIn('No se captó voz', app.lbl_estado.text)
+
     def test_lupa_y_enter_comparten_busqueda_manual(self):
         app = self._app()
         app.txt_busqueda.text = 'Calle Serrano 12'
@@ -439,25 +448,10 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         )
         self.assertEqual(app.txt_busqueda.text, '')
 
-    def test_exactamente_dos_acciones_unicas_y_accesibles(self):
-        self.assertEqual(len(main.STOP_ACTIONS), 2)
-        self.assertEqual(
-            [accion[0] for accion in main.STOP_ACTIONS],
-            ['texto', 'voz'],
-        )
-        self.assertEqual(
-            [accion[1] for accion in main.STOP_ACTIONS],
-            ['🔍', '🎙'],
-        )
-        self.assertEqual(
-            [accion[2] for accion in main.STOP_ACTIONS],
-            ['Texto', 'Voz'],
-        )
-        self.assertEqual(
-            {accion[4] for accion in main.STOP_ACTIONS},
-            {'buscar_manual', 'dictar_microfono'},
-        )
-        self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
+    def test_acciones_visibles_lupa_y_microfono(self):
+        self.assertEqual(main.SEARCH_ICON, '🔍')
+        self.assertEqual(main.VOICE_ICON, '🎙')
+        self.assertNotEqual(main.SEARCH_ICON, main.VOICE_ICON)
 
     @patch('main.repartidor.buscar_direccion_texto')
     def test_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):

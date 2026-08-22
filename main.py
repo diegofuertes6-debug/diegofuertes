@@ -39,10 +39,8 @@ CONFIG_FILE = 'webServerApiSettings.json'
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_CARTAS = 'Cartas'
-STOP_ACTIONS = (
-    ('texto', '🔍', 'Texto', 'Validar y añadir dirección escrita', 'buscar_manual'),
-    ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
-)
+SEARCH_ICON = '🔍'
+VOICE_ICON = '🎙'
 
 
 def _project_dir():
@@ -131,25 +129,31 @@ class RepartidorApp(App if App is not object else object):
         )
         self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
         fila_buscar.add_widget(self.txt_busqueda)
-        colores = (
-            (0.95, 0.55, 0.1, 1),
-            (0.2, 0.7, 0.3, 1),
+        btn_buscar = Button(
+            text=SEARCH_ICON,
+            size_hint_x=None,
+            width='56dp',
+            font_size='22sp',
+            background_normal='',
+            background_color=(0.95, 0.55, 0.1, 1),
         )
-        for (_identificador, icono, texto, etiqueta, handler), color in zip(
-            STOP_ACTIONS, colores
-        ):
-            boton = Button(
-                text=f'{icono}\n{texto}',
-                size_hint_x=None,
-                width='60dp',
-                font_size='14sp',
-                background_normal='',
-                background_color=color,
-            )
-            boton.tooltip_text = etiqueta
-            boton.accessibility_label = etiqueta
-            boton.bind(on_press=getattr(self, handler))
-            fila_buscar.add_widget(boton)
+        btn_buscar.tooltip_text = 'Buscar dirección escrita'
+        btn_buscar.accessibility_label = 'Buscar dirección escrita'
+        btn_buscar.bind(on_press=self.buscar_manual)
+        fila_buscar.add_widget(btn_buscar)
+
+        btn_voz = Button(
+            text=VOICE_ICON,
+            size_hint_x=None,
+            width='56dp',
+            font_size='22sp',
+            background_normal='',
+            background_color=(0.2, 0.7, 0.3, 1),
+        )
+        btn_voz.tooltip_text = 'Dictar dirección por voz'
+        btn_voz.accessibility_label = 'Dictar dirección por voz'
+        btn_voz.bind(on_press=self.dictar_microfono)
+        fila_buscar.add_widget(btn_voz)
         root.add_widget(fila_buscar)
 
         # ---- Selección prioridad y modo transporte ----
@@ -213,7 +217,7 @@ class RepartidorApp(App if App is not object else object):
 
         self._programar_reloj_19()
         if Clock:
-            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.5)
+            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0)
         else:
             self._solicitar_ubicacion_inicial()
 
@@ -418,13 +422,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Escuchando micrófono…')
         texto = repartidor.dictar_direccion()
-        if texto:
-            self._mostrar_confirmacion([texto], 'micrófono')
-        else:
-            self._set_estado(
-                'No se captó voz.\n'
-                'Asegúrate de tener micrófono y SpeechRecognition instalado.'
-            )
+        self._on_texto_microfono(texto)
 
     def _on_permiso_microfono(self, concedido, _denegados):
         if not concedido:
@@ -434,9 +432,19 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Di ahora la dirección completa…')
         android_services.start_speech_recognition(
-            lambda texto: self._mostrar_confirmacion([texto], 'micrófono'),
+            self._on_texto_microfono,
             self._set_estado,
         )
+
+    def _on_texto_microfono(self, texto):
+        texto = repartidor.normalizar_direccion(texto or '')
+        if not texto:
+            self._set_estado(
+                'No se captó voz.\n'
+                'Asegúrate de tener micrófono y SpeechRecognition instalado.'
+            )
+            return
+        self._mostrar_confirmacion([texto], 'micrófono')
 
     def buscar_manual(self, *_args):
         """Geocodifica la dirección escrita manualmente."""
