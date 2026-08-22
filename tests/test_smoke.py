@@ -189,6 +189,37 @@ class AndroidManifestHookTests(unittest.TestCase):
         self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
 
 
+class BuildozerAndroidConfigTests(unittest.TestCase):
+    def _buildozer_lines(self):
+        spec = Path(__file__).resolve().parents[1] / 'buildozer.spec'
+        return spec.read_text(encoding='utf-8').splitlines()
+
+    def _get_setting(self, key):
+        for line in self._buildozer_lines():
+            clean = line.strip()
+            if clean.startswith('#'):
+                continue
+            if '=' not in clean:
+                continue
+            current_key, _, value = clean.partition('=')
+            if current_key.strip() == key:
+                return value.split('#', 1)[0].strip()
+        self.fail(f'No se encontró {key} en buildozer.spec')
+
+    def test_android_api_cumple_requisito_play_store(self):
+        self.assertGreaterEqual(int(self._get_setting('android.api')), 34)
+
+    def test_permisos_android_requeridos_presentes(self):
+        permisos = {
+            permiso.strip()
+            for permiso in self._get_setting('android.permissions').split(',')
+            if permiso.strip()
+        }
+        requeridos = {'INTERNET', 'ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'CAMERA', 'RECORD_AUDIO'}
+        faltantes = requeridos.difference(permisos)
+        self.assertFalse(faltantes, f'Faltan permisos requeridos en buildozer.spec: {sorted(faltantes)}')
+
+
 class PermisosGeolocalTests(unittest.TestCase):
     @patch('repartidor._is_android', return_value=False)
     def test_permiso_no_android_devuelve_true(self, _mock):
