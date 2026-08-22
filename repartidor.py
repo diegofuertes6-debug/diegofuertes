@@ -87,7 +87,6 @@ def procesar_imagen(path):
 
 def leer_texto_imagen(path):
     del path
-    print('OCR desactivado: usa entrada manual o voz.')
     return ''
 
 
