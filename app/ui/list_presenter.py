@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from app.domain.priority import Priority
+from app.domain.stop_id import StopId
 
 
 class ListPresenter:
     @staticmethod
     def label_for(stop):
         stop_type = str(stop.get("type", "notificacion")).strip().lower()
-        prefix = "N" if stop_type in {"n", "notificacion", "notification"} else "P"
+        prefix = StopId.type_prefix(stop_type)
         number = stop.get("id") or stop.get("code") or "1"
         if not str(number).startswith(prefix):
             return f"{prefix}{str(number).lstrip(prefix)}"

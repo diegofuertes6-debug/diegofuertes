@@ -6,6 +6,11 @@ from typing import Iterable, List
 from app.domain.priority import Priority
 
 
+def is_after_cutoff(now: datetime) -> bool:
+    """Return True once the 18:30 daily optimization cut-off has been reached."""
+    return now.hour > 18 or (now.hour == 18 and now.minute >= 30)
+
+
 def optimize_initial(stops: Iterable[dict]) -> List[dict]:
     """Sin prioridad: devuelve la secuencia más corta por distancia."""
     items = [stop for stop in stops if isinstance(stop, dict)]
@@ -31,7 +36,7 @@ def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List
     if not items:
         return []
 
-    if now.hour < 18 or (now.hour == 18 and now.minute < 30):
+    if not is_after_cutoff(now):
         return optimize_initial(items)
 
     pending = [stop for stop in items if stop.get("pending", False)]

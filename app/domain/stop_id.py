@@ -8,9 +8,14 @@ class StopId:
 
     _last_ids = {"N": 0, "P": 0}
 
+    @staticmethod
+    def type_prefix(stop_type: str) -> str:
+        """Return ``"N"`` for notification stops or ``"P"`` for package stops."""
+        return "N" if str(stop_type).strip().lower() in {"n", "notificacion", "notification"} else "P"
+
     @classmethod
     def next_id(cls, stop_type: str) -> str:
-        prefix = "N" if stop_type.strip().lower() in {"n", "notificacion", "notification"} else "P"
+        prefix = cls.type_prefix(stop_type)
         cls._last_ids[prefix] += 1
         return f"{prefix}{cls._last_ids[prefix]}"
 
@@ -22,7 +27,7 @@ class StopId:
             if not isinstance(stop, dict):
                 continue
             stop_type = str(stop.get("type", "notificacion")).strip().lower()
-            prefix = "N" if stop_type in {"n", "notificacion", "notification"} else "P"
+            prefix = cls.type_prefix(stop_type)
             counters[prefix] += 1
             stop["id"] = f"{prefix}{counters[prefix]}"
             stop["type"] = "notificacion" if prefix == "N" else "paquete"
