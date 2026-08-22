@@ -158,35 +158,20 @@ class PrioridadColorTests(unittest.TestCase):
 
 
 class AndroidManifestHookTests(unittest.TestCase):
-    def test_provider_se_inserta_como_hijo_de_application_una_vez(self):
+    def test_patch_manifest_no_modifica_archivo(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = Path(tmp) / 'AndroidManifest.xml'
             manifest.write_text(
                 '<manifest><application></application></manifest>',
                 encoding='utf-8',
             )
-            p4a_hook.inject_file_provider(manifest)
-            p4a_hook.inject_file_provider(manifest)
-            resultado = manifest.read_text(encoding='utf-8')
-
-        self.assertEqual(resultado.count(p4a_hook.PROVIDER_MARKER), 1)
-        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
-
-    def test_query_camara_es_hijo_de_manifest_e_idempotente(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest = Path(tmp) / 'AndroidManifest.xml'
-            manifest.write_text(
-                '<manifest><application></application></manifest>',
-                encoding='utf-8',
-            )
-            p4a_hook.patch_manifest(manifest)
+            original = manifest.read_text(encoding='utf-8')
             p4a_hook.patch_manifest(manifest)
             resultado = manifest.read_text(encoding='utf-8')
+        self.assertEqual(resultado, original)
 
-        self.assertEqual(resultado.count(p4a_hook.CAMERA_ACTION), 1)
-        self.assertLess(resultado.index('<queries>'), resultado.index('<application'))
-        self.assertGreater(resultado.index('<provider'), resultado.index('<application'))
-        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
+    def test_after_apk_build_no_falla(self):
+        self.assertIsNone(p4a_hook.after_apk_build(object()))
 
 
 class PermisosGeolocalTests(unittest.TestCase):
@@ -209,76 +194,6 @@ class AndroidServicesTests(unittest.TestCase):
     @patch('android_services.is_android', return_value=False)
     def test_ubicacion_habilitada_en_escritorio(self, _mock):
         self.assertTrue(android_services.is_location_enabled())
-
-    @patch('android_services.is_android', return_value=True)
-    def test_camara_inicia_intent_desde_mactivity(self, _mock):
-        bound_callbacks = {}
-        activity_bridge = types.SimpleNamespace(
-            bind=lambda **callbacks: bound_callbacks.update(callbacks),
-            unbind=lambda **_callbacks: None,
-        )
-        java_activity = MagicMock()
-        java_activity.getPackageName.return_value = 'org.test.repartidorapp'
-        java_activity.getPackageManager.return_value = object()
-
-        class FakeIntent:
-            FLAG_GRANT_READ_URI_PERMISSION = 1
-            FLAG_GRANT_WRITE_URI_PERMISSION = 2
-
-            def __init__(self, _action):
-                self.extras = {}
-
-            def putExtra(self, key, value):
-                self.extras[key] = value
-
-            def setClipData(self, _clip):
-                return None
-
-            def addFlags(self, _flags):
-                return None
-
-            def resolveActivity(self, _manager):
-                return object()
-
-        fake_classes = {
-            'android.content.ClipData': types.SimpleNamespace(
-                newRawUri=lambda _label, uri: uri
-            ),
-            'java.io.File': lambda path: path,
-            'androidx.core.content.FileProvider': types.SimpleNamespace(
-                getUriForFile=lambda _activity, _authority, _file: 'content://capture'
-            ),
-            'android.content.Intent': FakeIntent,
-            'android.provider.MediaStore': types.SimpleNamespace(
-                ACTION_IMAGE_CAPTURE='android.media.action.IMAGE_CAPTURE',
-                EXTRA_OUTPUT='output',
-            ),
-        }
-        android_module = types.ModuleType('android')
-        android_module.activity = activity_bridge
-        android_module.mActivity = java_activity
-        jnius_module = types.ModuleType('jnius')
-        jnius_module.autoclass = lambda name: fake_classes[name]
-        jnius_module.cast = lambda _class_name, value: value
-
-        try:
-            with tempfile.TemporaryDirectory() as tmp, patch.dict(
-                sys.modules,
-                {'android': android_module, 'jnius': jnius_module},
-            ):
-                android_services.capture_photo(
-                    str(Path(tmp) / 'capture.jpg'),
-                    lambda _path: None,
-                    self.fail,
-                )
-            self.assertIn('on_activity_result', bound_callbacks)
-            java_activity.startActivityForResult.assert_called_once()
-            self.assertEqual(
-                java_activity.startActivityForResult.call_args.args[1],
-                android_services.CAMERA_REQUEST_CODE,
-            )
-        finally:
-            android_services._camera_callback = None
 
     @patch('android_services.is_android', return_value=True)
     def test_maps_se_abre_mediante_action_view(self, _mock):
@@ -348,7 +263,7 @@ class AndroidServicesTests(unittest.TestCase):
     def test_permisos_no_android_responde_sin_solicitar(self, _mock):
         resultado = []
         android_services.request_runtime_permissions(
-            android_services.CAMERA_PERMISSIONS,
+            android_services.MICROPHONE_PERMISSIONS,
             lambda concedido, denegados: resultado.append((concedido, denegados)),
         )
         self.assertEqual(resultado, [(True, [])])
@@ -371,14 +286,14 @@ class AndroidServicesTests(unittest.TestCase):
             },
         ):
             android_services.request_runtime_permissions(
-                android_services.CAMERA_PERMISSIONS,
+                android_services.MICROPHONE_PERMISSIONS,
                 lambda concedido, denegados: resultado.append(
                     (concedido, denegados)
                 ),
             )
         self.assertEqual(
             resultado,
-            [(False, list(android_services.CAMERA_PERMISSIONS))],
+            [(False, list(android_services.MICROPHONE_PERMISSIONS))],
         )
 
     def test_reconocimiento_voz_concurrente_se_rechaza(self):
@@ -395,33 +310,15 @@ class AndroidServicesTests(unittest.TestCase):
 
 
 class OcrDireccionTests(unittest.TestCase):
-    def test_extrae_direccion_y_codigo_postal(self):
-        direccion, cp = repartidor.extraer_direccion_texto_ocr(
-            'Entrega para Calle Mayor 15, 28013 Madrid'
-        )
-        self.assertTrue(direccion.startswith('Calle Mayor 15'))
-        self.assertEqual(cp, '28013')
-
-    def test_texto_ocr_vacio(self):
-        self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
-
-    def test_ocr_devuelve_varios_candidatos_sin_lineas_de_ruido(self):
-        candidatos = repartidor.extraer_candidatos_direccion_ocr(
-            'PEDIDO 123\nCalle Mayor 15\n28013 Madrid\n'
-            'Avenida de América 24, 28028 Madrid\nTOTAL 19,95'
-        )
-        self.assertEqual(len(candidatos), 2)
-        self.assertTrue(candidatos[0].startswith(('Calle', 'Avenida')))
-        self.assertNotIn('PEDIDO', ' '.join(candidatos))
-        self.assertNotIn('TOTAL', ' '.join(candidatos))
-
-    def test_ocr_acepta_abreviatura_y_lineas_separadas(self):
+    def test_ocr_desactivado_devuelve_vacios(self):
         self.assertEqual(
-            repartidor.extraer_candidatos_direccion_ocr(
-                'C/ Mayor\n15\n28013 Madrid'
+            repartidor.extraer_direccion_texto_ocr(
+                'Entrega para Calle Mayor 15, 28013 Madrid'
             ),
-            ['C/ Mayor, 15, 28013 Madrid'],
+            ('', ''),
         )
+        self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
+        self.assertEqual(repartidor.extraer_candidatos_direccion_ocr('texto'), [])
 
 
 class AnadirParadaComunTests(unittest.TestCase):
@@ -519,88 +416,6 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app.lista_widget = None
         return app
 
-    def test_camara_ocr_inicia_geocodificacion_y_limpia_temporal(self):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'scan.jpg'
-            foto.write_bytes(b'image')
-            app._ejecutar_en_segundo_plano = MagicMock()
-            app._procesar_texto_ocr('Calle Alcalá 10\n28014 Madrid', str(foto))
-            app._ejecutar_en_segundo_plano.assert_called_once()
-            self.assertIn('Geocodificando', app.lbl_estado.text)
-            self.assertFalse(foto.exists())
-            self.assertFalse(app._camera_en_curso)
-
-    def test_segunda_camara_no_borra_captura_en_curso(self):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'temp_scan.jpg'
-            foto.write_bytes(b'image-in-progress')
-            app.user_data_dir = tmp
-            app._camera_en_curso = True
-            with patch('main.android_services.capture_photo') as captura:
-                app._abrir_camara()
-            captura.assert_not_called()
-            self.assertEqual(foto.read_bytes(), b'image-in-progress')
-            self.assertIn('en curso', app.lbl_estado.text)
-
-    @patch(
-        'main.repartidor.leer_texto_imagen',
-        return_value=(
-            'Calle Alcalá 10, 28014 Madrid\n'
-            'Avenida de América 24, 28028 Madrid'
-        ),
-    )
-    @patch('main.android_services.is_android', return_value=False)
-    def test_camara_escritorio_inicia_geocodificacion_automatica(
-        self, _android, _ocr
-    ):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'scan.jpg'
-            foto.write_bytes(b'image')
-            app._ejecutar_en_segundo_plano = MagicMock()
-            app._procesar_foto(str(foto))
-
-        app._ejecutar_en_segundo_plano.assert_called_once()
-        self.assertIn('Geocodificando', app.lbl_estado.text)
-        self.assertFalse(foto.exists())
-        self.assertFalse(app._camera_en_curso)
-
-    def test_finalizar_ocr_exito_aniade_parada_y_abre_maps(self):
-        app = self._app()
-        componentes = {
-            'calle_tipo': 'Calle',
-            'calle_nombre': 'Mayor',
-            'numero': '42',
-            'codigo_postal': '28001',
-            'poblacion': 'Madrid',
-            'direccion_completa': 'Calle Mayor 42, 28001 Madrid',
-        }
-        resultado = {'lat': 40.416, 'lng': -3.703, 'address': 'Calle Mayor 42, Madrid'}
-        app._abrir_maps_ubicacion = MagicMock()
-        app._finalizar_ocr(componentes, resultado, '')
-        self.assertEqual(len(app.lista_paradas), 1)
-        self.assertEqual(app.lista_paradas[0]['address'], 'Calle Mayor 42, Madrid')
-        app._abrir_maps_ubicacion.assert_called_once_with(40.416, -3.703)
-        self.assertIn('Maps', app.lbl_estado.text)
-
-    def test_finalizar_ocr_fallo_geocodificacion_muestra_error(self):
-        app = self._app()
-        componentes = {
-            'calle_tipo': '',
-            'calle_nombre': '',
-            'numero': '',
-            'codigo_postal': '',
-            'poblacion': '',
-            'direccion_completa': 'Dirección inexistente XYZ',
-        }
-        app._abrir_maps_ubicacion = MagicMock()
-        app._finalizar_ocr(componentes, None, 'sin resultados')
-        self.assertEqual(len(app.lista_paradas), 0)
-        app._abrir_maps_ubicacion.assert_not_called()
-        self.assertIn('sin resultados', app.lbl_estado.text)
-
     @patch('main.repartidor.dictar_direccion', return_value='Gran Vía 28, Madrid')
     @patch('main.android_services.is_android', return_value=False)
     def test_microfono_propone_texto_para_confirmar(self, _android, _dictado):
@@ -621,28 +436,28 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         )
         self.assertEqual(app.txt_busqueda.text, '')
 
-    def test_exactamente_tres_acciones_unicas_y_accesibles(self):
-        self.assertEqual(len(main.STOP_ACTIONS), 3)
+    def test_exactamente_dos_acciones_unicas_y_accesibles(self):
+        self.assertEqual(len(main.STOP_ACTIONS), 2)
         self.assertEqual(
             [accion[0] for accion in main.STOP_ACTIONS],
-            ['texto', 'voz', 'escaner'],
+            ['texto', 'voz'],
         )
         self.assertEqual(
             [accion[1] for accion in main.STOP_ACTIONS],
-            ['🔍', '🎙', '📷'],
+            ['🔍', '🎙'],
         )
         self.assertEqual(
             [accion[2] for accion in main.STOP_ACTIONS],
-            ['Texto', 'Voz', 'Escáner'],
+            ['Texto', 'Voz'],
         )
         self.assertEqual(
             {accion[4] for accion in main.STOP_ACTIONS},
-            {'buscar_manual', 'dictar_microfono', 'escanear_camara'},
+            {'buscar_manual', 'dictar_microfono'},
         )
         self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
 
     @patch('main.repartidor.buscar_direccion_texto')
-    def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
+    def test_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
         geocode.side_effect = lambda texto: {
             'address': texto,
             'lat': 40.4168,
@@ -656,23 +471,19 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             def dismiss(self):
                 return None
 
-        for origen, direccion in (
-            ('cámara', 'Calle Cámara 10'),
-            ('micrófono', 'Calle Voz 20'),
-        ):
-            app._confirmar_propuesta(
-                PopupFake(),
-                types.SimpleNamespace(text=direccion),
-                origen,
-                types.SimpleNamespace(text=''),
-            )
+        app._confirmar_propuesta(
+            PopupFake(),
+            types.SimpleNamespace(text='Calle Voz 20'),
+            'micrófono',
+            types.SimpleNamespace(text=''),
+        )
         app.txt_busqueda.text = 'Calle Escrita 30'
         app.buscar_manual()
 
-        self.assertEqual(geocode.call_count, 3)
+        self.assertEqual(geocode.call_count, 2)
         self.assertEqual(
             {parada['origen'] for parada in app.lista_paradas},
-            {'cámara', 'micrófono', 'búsqueda'},
+            {'micrófono', 'búsqueda'},
         )
         self.assertTrue(all(
             parada['estado'] == 'geolocalizada'

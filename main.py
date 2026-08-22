@@ -42,7 +42,6 @@ _SELECT_CARTAS = 'Cartas'
 STOP_ACTIONS = (
     ('texto', '🔍', 'Texto', 'Validar y añadir dirección escrita', 'buscar_manual'),
     ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
-    ('escaner', '📷', 'Escáner', 'Escanear, revisar y añadir dirección', 'escanear_camara'),
 )
 
 
@@ -78,8 +77,6 @@ class RepartidorApp(App if App is not object else object):
         self._notificacion = repartidor.DEFAULT_LETTER
         self._clock_19 = None
         self._popup_confirmacion = None
-        self._temp_scan_path = None
-        self._camera_en_curso = False
         self._location_permission_requested = False
         self._location_permission_denied = False
         self._location_request_in_progress = False
@@ -124,7 +121,7 @@ class RepartidorApp(App if App is not object else object):
         )
         root.add_widget(self.lbl_estado)
 
-        # ---- Alta de parada: un campo y exactamente tres acciones ----
+        # ---- Alta de parada: un campo y dos acciones ----
         fila_buscar = BoxLayout(size_hint_y=None, height='64dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
@@ -137,7 +134,6 @@ class RepartidorApp(App if App is not object else object):
         colores = (
             (0.95, 0.55, 0.1, 1),
             (0.2, 0.7, 0.3, 1),
-            (0.1, 0.6, 0.9, 1),
         )
         for (_identificador, icono, texto, etiqueta, handler), color in zip(
             STOP_ACTIONS, colores
@@ -406,136 +402,10 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     # Entrada de paradas
     # ------------------------------------------------------------------
-    def escanear_camara(self, *_args):
-        """Take a photo and propose its OCR address for confirmation."""
-        if android_services.is_android():
-            self._set_estado('Solicitando acceso a la cámara…')
-            android_services.request_runtime_permissions(
-                android_services.CAMERA_PERMISSIONS,
-                self._on_permiso_camara,
-            )
-            return
-        self._abrir_camara()
-
-    def _on_permiso_camara(self, concedido, _denegados):
-        if not concedido:
-            self._set_estado(
-                'Permiso de cámara denegado. Puedes escribir la dirección manualmente.'
-            )
-            return
-        self._abrir_camara()
-
-    def _abrir_camara(self):
-        if self._camera_en_curso:
-            self._set_estado('Ya hay una captura de cámara en curso.')
-            return
-        self._set_estado('Abriendo cámara…')
-        filepath = os.path.join(self.user_data_dir, 'temp_scan.jpg')
-        self._temp_scan_path = filepath
-        self._camera_en_curso = True
-        self._eliminar_temporal(filepath)
-        android_services.capture_photo(
-            filepath,
-            self._procesar_foto,
-            lambda error: self._error_captura(error, filepath),
-        )
-
-    def _procesar_foto(self, filepath):
-        filepath = filepath or os.path.join(self.user_data_dir, 'temp_scan.jpg')
-        if not os.path.isfile(filepath):
-            self._camera_en_curso = False
-            self._set_estado('No se capturó ninguna imagen.')
-            self._temp_scan_path = None
-            return
-        self._set_estado('Procesando imagen…')
-        if android_services.is_android():
-            android_services.recognize_image_text(
-                filepath,
-                lambda texto: self._procesar_texto_ocr(texto, filepath),
-                lambda error: self._error_captura(error, filepath),
-            )
-            return
-        texto = repartidor.leer_texto_imagen(filepath)
-        self._procesar_texto_ocr(texto, filepath)
-
-    def _procesar_texto_ocr(self, texto, filepath):
-        try:
-            componentes = repartidor.construir_direccion_estructurada(texto)
-            direccion_completa = componentes.get('direccion_completa', '').strip()
-            if direccion_completa:
-                self._set_estado(
-                    f'Dirección detectada: {direccion_completa}. Geocodificando…'
-                )
-                self._ejecutar_en_segundo_plano(
-                    lambda: self._geocodificar_y_abrir_ocr(componentes)
-                )
-            else:
-                candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
-                if candidatos:
-                    self._mostrar_confirmacion(candidatos, 'cámara')
-                else:
-                    self._set_estado('No se detectó una dirección válida en la imagen.')
-        finally:
-            self._eliminar_temporal(filepath)
-            self._temp_scan_path = None
-            self._camera_en_curso = False
-
-    def _geocodificar_y_abrir_ocr(self, componentes):
-        """Geocode structured OCR address, add stop, and open Maps automatically."""
-        direccion_completa = componentes.get('direccion_completa', '')
-        resultado, detalle = repartidor.resolver_geocodificacion(
-            direccion_completa,
-            geocodificador=repartidor.buscar_direccion_texto,
-        )
-        self._dispatch_ui(
-            lambda: self._finalizar_ocr(componentes, resultado, detalle)
-        )
-
-    def _finalizar_ocr(self, componentes, resultado, detalle):
-        direccion_completa = componentes.get('direccion_completa', '')
-        if not isinstance(resultado, dict) or not repartidor.coordenadas_validas(
-            resultado.get('lat'), resultado.get('lng')
-        ):
-            self._set_estado(
-                f'No se geocodificó "{direccion_completa}". '
-                f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
-            )
-            return
-        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
-        resultado['prioridad'] = prioridad
-        resultado['paqueteria'] = self._paqueteria
-        resultado['notificacion'] = self._notificacion
-        resultado['estado'] = 'pendiente'
-        resultado.setdefault('address', direccion_completa)
-        self.lista_paradas.append(resultado)
-        self._set_estado(
-            f'Parada añadida desde cámara: {resultado["address"]}. Abriendo Maps…'
-        )
-        self._refrescar_lista()
-        self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
-
     def _abrir_maps_ubicacion(self, lat, lng):
         """Open Google Maps centered on the given coordinates (non-blocking)."""
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
         self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
-
-    def _usar_direccion_ocr(self, direccion, cp):
-        if direccion and cp:
-            texto = f'{direccion}, {cp}'
-        elif direccion:
-            texto = direccion
-        else:
-            self._set_estado('No se detectó una dirección válida en la imagen.')
-            return
-        componentes = repartidor.construir_direccion_estructurada(texto)
-        direccion_completa = componentes.get('direccion_completa') or texto
-        self._mostrar_confirmacion([direccion_completa], 'cámara')
-
-    def _error_captura(self, error, filepath):
-        self._eliminar_temporal(filepath)
-        self._temp_scan_path = None
-        self._camera_en_curso = False
-        self._set_estado(error)
 
     def dictar_microfono(self, *_args):
         """Dicta una dirección por voz y añade la parada."""
@@ -946,10 +816,6 @@ class RepartidorApp(App if App is not object else object):
         if self._popup_confirmacion is not None:
             self._popup_confirmacion.dismiss()
             self._popup_confirmacion = None
-        if self._temp_scan_path:
-            self._eliminar_temporal(self._temp_scan_path)
-            self._temp_scan_path = None
-        self._camera_en_curso = False
         android_services.cancel_pending_activities()
 
     def on_pause(self):

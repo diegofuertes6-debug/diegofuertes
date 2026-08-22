@@ -5,13 +5,11 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 ## Características
 
 - **Geolocalización**: muestra la posición actual del repartidor (requiere permiso de ubicación).
-- **Entrada de paradas** por tres canales:
-  - 📷 Cámara: toma una foto, propone una o varias direcciones extraídas por
-    OCR y permite seleccionar, editar y confirmar antes de añadir.
+- **Entrada de paradas** por dos canales:
   - 🎙 Micrófono: dicta la dirección por voz (speech-to-text), revisa el texto
     reconocido y confírmalo antes de añadir.
   - 🔍 Búsqueda manual: escribe la dirección y pulsa la lupa o Enter.
-  Los tres canales comparten validación, geocodificación y detección de
+  Ambos canales comparten validación, geocodificación y detección de
   duplicados, y siempre muestran si la parada se añadió o por qué se rechazó.
 - **Prioridades**: asigna alta (roja), media (naranja) o baja (verde).
 - **Paquetería y cartas**: elige paquetería Urgente/Normal y el tipo de carta;
@@ -56,31 +54,20 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
 | `INTERNET` | Llamadas a la API de geocodificación de Google Maps |
 | `ACCESS_COARSE_LOCATION` | Permitir que Android ofrezca ubicación aproximada |
 | `ACCESS_FINE_LOCATION` | Obtener ubicación precisa si el usuario la autoriza |
-| `CAMERA` | Captura de foto para OCR de dirección |
 | `RECORD_AUDIO` | Reconocimiento de voz (micrófono) |
 
 Al arrancar se explica y solicita el permiso de ubicación porque la posición
-actual es el depósito obligatorio de la ruta. Cámara y micrófono se solicitan
-en contexto al usar cada función. Si el usuario deniega ubicación, la app
-respeta la decisión y no repite automáticamente el prompt. Las imágenes se
-capturan en almacenamiento privado mediante `FileProvider`, se eliminan después
-del OCR y no quedan en la galería; la app tampoco guarda el audio reconocido.
+actual es el depósito obligatorio de la ruta. El micrófono se solicita en
+contexto al usar la función de voz. Si el usuario deniega ubicación, la app
+respeta la decisión y no repite automáticamente el prompt; la app tampoco
+guarda el audio reconocido.
 
 ---
 
-## Uso de cámara y micrófono
-
-### Cámara
-- Pulsa el único botón de escáner **📷**.
-- En Android abre la cámara nativa y procesa la foto localmente con ML Kit.
-- Revisa la dirección propuesta. Si hay varios candidatos, selecciónala en la
-  lista; también puedes editar el texto antes de pulsar **Añadir parada**.
-- El archivo temporal se elimina al completar o fallar el OCR.
-- En escritorio intenta capturar un fotograma con OpenCV (`cv2`).
-- El texto de la imagen se extrae con `pytesseract` (requiere Tesseract OCR instalado).
+## Uso de micrófono
 
 ### Micrófono
-- Pulsa el único botón de voz **🎙**.
+- Pulsa el botón de voz **🎙**.
 - En Android lanza el intent `ACTION_RECOGNIZE_SPEECH` del sistema.
 - Revisa o corrige el texto reconocido y pulsa **Añadir parada**.
 - En escritorio usa la biblioteca `SpeechRecognition` con la Google Web Speech API.
