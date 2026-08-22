@@ -7,7 +7,7 @@ Cómo funciona la regla de las 19:00
 -------------------------------------
 - La hora local del dispositivo se consulta con ``datetime.now().hour``.
 - Si la hora actual es >= 19, ``priorizar_paradas`` reordena primero por
-  prioridad (alta > media > baja) y dentro de cada grupo conserva el orden
+  prioridad (alta > media > sin prioridad) y dentro de cada grupo conserva el orden
   de menor distancia acumulada (nearest-neighbor greedy).
 - Si la app se abre después de las 19:00 la política se aplica desde el
   primer cálculo. El recálculo también ocurre cuando el usuario añade o
@@ -21,7 +21,6 @@ import re
 from datetime import datetime
 import math
 
-DEFAULT_PHOTO_FILENAME = 'foto_direccion.jpg'
 API_KEY_ENV_VAR = 'GOOGLE_MAPS_API_KEY'
 API_KEY_CANDIDATES = (
     API_KEY_ENV_VAR,
@@ -31,16 +30,17 @@ API_KEY_CANDIDATES = (
     'apiKey',
     'key',
 )
-PRIORITY_ORDER = ('alta', 'media', 'baja')
+PRIORITY_ORDER = ('alta', 'media', 'sin prioridad')
 PRIORITY_COLORS = {
     'alta': (1.0, 0.0, 0.0, 1.0),
     'media': (1.0, 0.5, 0.0, 1.0),
-    'baja': (0.0, 1.0, 0.0, 1.0),
+    'sin prioridad': (0.0, 0.4, 1.0, 1.0),
 }
-PACKAGE_OPTIONS = ('Urgente', 'Normal')
-DEFAULT_PACKAGE = 'Normal'
-LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
-DEFAULT_LETTER = 'Sin cartas'
+PACKAGE_OPTIONS = ('Pequeño', 'Mediano', 'Grande')
+DEFAULT_PACKAGE = 'Mediano'
+LETTER_OPTIONS = ('Cartas',)
+DEFAULT_LETTER = 'Cartas'
+GEOCODE_RETRYABLE_STATUS = {'UNKNOWN_ERROR'}
 
 try:
     from dotenv import load_dotenv
@@ -51,16 +51,6 @@ try:
     import requests
 except ImportError:
     requests = None
-
-try:
-    import pytesseract
-except ImportError:
-    pytesseract = None
-
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
 
 try:
     from kivy.utils import platform as kivy_platform
@@ -87,91 +77,28 @@ def _safe_read_json(path):
         return None
 
 
-def _resolve_path(path):
-    if not path:
-        path = DEFAULT_PHOTO_FILENAME
-    path = os.path.expanduser(str(path))
-    if os.path.isabs(path):
-        return path
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), path))
-
-
 def _is_android():
     return _get_platform_name() == 'android' or os.environ.get('ANDROID_ARGUMENT') is not None
 
 
-def take_photo(filename='foto_direccion.jpg', quality=0.8):
-    del quality
-    target_path = _resolve_path(filename)
-    if os.path.exists(target_path):
-        return target_path
-
-    if _is_android():
-        print(
-            'La captura Android es asíncrona; usa '
-            'android_services.capture_photo desde la interfaz.'
-        )
-        return target_path
-
-    try:
-        import cv2
-    except ImportError:
-        cv2 = None
-
-    if cv2 is not None:
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                cv2.imwrite(target_path, frame)
-                cap.release()
-                if os.path.exists(target_path):
-                    return target_path
-            cap.release()
-
-    print('No se pudo capturar una foto automáticamente; se usará la ruta indicada.')
-    return target_path
-
-
 def procesar_imagen(path):
-    texto = leer_texto_imagen(path)
-    return extraer_direccion_texto_ocr(texto)
+    del path
+    return '', ''
 
 
 def leer_texto_imagen(path):
-    """Extract all OCR text from an image on desktop."""
-    target_path = _resolve_path(path)
-    if not os.path.isfile(target_path):
-        print(f'No existe la imagen: {target_path}')
-        return ''
-
-    if pytesseract is None or Image is None:
-        print('pytesseract/Pillow no están disponibles para procesar la imagen.')
-        return ''
-
-    try:
-        with Image.open(target_path) as image:
-            return str(pytesseract.image_to_string(image, lang='eng+spa') or '')
-    except (OSError, ValueError) as exc:
-        print(f'No se pudo procesar la imagen: {exc}')
-        return ''
+    """OCR retirado: siempre devuelve ''."""
+    del path
+    return ''
 
 
 def extraer_direccion_texto_ocr(texto):
-    """Extract a likely Spanish street address and postal code from OCR text."""
-    candidatos = extraer_candidatos_direccion_ocr(texto)
-    if not candidatos:
-        return '', ''
-    direccion = candidatos[0]
-    cp_match = re.search(r'\b\d{5}\b', direccion)
-    cp_final = cp_match.group() if cp_match else ''
-    if cp_final:
-        direccion = re.sub(rf'(?:,\s*)?\b{re.escape(cp_final)}\b.*$', '', direccion).strip(' ,')
-    return direccion, cp_final
+    del texto
+    return '', ''
 
 
 def construir_direccion_estructurada(texto):
-    """Parse OCR text into structured Spanish address components.
+    """Parse address-like text into structured Spanish address components.
 
     Returns:
         dict: {
@@ -266,50 +193,8 @@ def normalizar_direccion(texto):
 
 
 def extraer_candidatos_direccion_ocr(texto):
-    """Return plausible address lines ordered by confidence, without OCR noise."""
-    texto = str(texto or '').replace('\r', '\n')
-    if not texto.strip():
-        return []
-
-    prefijo = re.compile(
-        r'\b(?:Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
-        r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
-        re.IGNORECASE,
-    )
-    codigo_postal = re.compile(r'\b\d{5}\b')
-    lineas = [normalizar_direccion(linea) for linea in texto.split('\n')]
-    candidatos = []
-    for indice, linea in enumerate(lineas):
-        coincidencia = prefijo.search(linea) if linea else None
-        if coincidencia is None:
-            continue
-        candidato = linea[coincidencia.start():]
-        for siguiente in lineas[indice + 1:indice + 3]:
-            if not siguiente:
-                continue
-            es_numero_portal = bool(
-                re.fullmatch(r'\d{1,4}[A-Za-z]?(?:[-/]\d{1,4})?', siguiente)
-            )
-            if es_numero_portal or (
-                codigo_postal.search(siguiente) and len(siguiente) <= 60
-            ):
-                candidato = f'{candidato}, {siguiente}'
-            if codigo_postal.search(siguiente):
-                break
-        candidato = normalizar_direccion(candidato)
-        if len(candidato) >= 6 and candidato.casefold() not in {
-            existente.casefold() for existente in candidatos
-        }:
-            candidatos.append(candidato)
-
-    return sorted(
-        candidatos,
-        key=lambda candidato: (
-            not bool(re.search(r'\d', candidato)),
-            not bool(codigo_postal.search(candidato)),
-            len(candidato),
-        ),
-    )
+    del texto
+    return []
 
 
 def cargar_api_key():
@@ -387,30 +272,32 @@ def obtener_coordenadas(direccion, cp):
 def asignar_prioridad(parada, prioridad):
     if not isinstance(parada, dict):
         return parada
-    prioridad_valida = prioridad.lower().strip() if isinstance(prioridad, str) else 'media'
+    prioridad_valida = (
+        prioridad.lower().strip() if isinstance(prioridad, str) else 'sin prioridad'
+    )
+    if prioridad_valida == 'baja':
+        prioridad_valida = 'sin prioridad'
     if prioridad_valida not in PRIORITY_ORDER:
-        prioridad_valida = 'media'
+        prioridad_valida = 'sin prioridad'
     parada['prioridad'] = prioridad_valida
     return parada
 
 
 def normalizar_paqueteria(valor):
-    """Normalize current and legacy package values to the two supported options."""
+    """Normalize current and legacy package values to size-based options."""
     texto = normalizar_direccion(valor).casefold()
-    if texto == 'urgente' or any(
-        marca in texto for marca in ('express', '24 h', '24h', 'prioritari')
-    ):
-        return 'Urgente'
+    if any(marca in texto for marca in ('peque', 'small')):
+        return 'Pequeño'
+    if any(marca in texto for marca in ('grande', 'large', 'express', '24 h', '24h', 'prioritari', 'urgente')):
+        return 'Grande'
+    if any(marca in texto for marca in ('mediano', 'medio', 'normal', 'standard', 'medium')):
+        return 'Mediano'
     return DEFAULT_PACKAGE
 
 
 def normalizar_cartas(valor):
-    """Normalize legacy notification values without changing the persisted key."""
-    texto = normalizar_direccion(valor).casefold()
-    if texto in {'ordinaria', 'carta ordinaria'}:
-        return 'Ordinaria'
-    if texto in {'certificada', 'carta certificada'}:
-        return 'Certificada'
+    """Normalize all legacy letter values to the single supported option."""
+    del valor
     return DEFAULT_LETTER
 
 
@@ -784,15 +671,28 @@ def buscar_direccion_texto(texto):
 
     url = 'https://maps.googleapis.com/maps/api/geocode/json'
     params = {'address': texto, 'key': API_KEY}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        res = resp.json()
-    except Exception as exc:
-        print(f'Error al geocodificar "{texto}": {exc}')
+    res = None
+    for intento in range(2):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            res = resp.json()
+        except Exception as exc:
+            if intento == 1:
+                print(f'Error al geocodificar "{texto}": {exc}')
+                return None
+            continue
+
+        status = str(res.get('status', '')).upper()
+        if status in GEOCODE_RETRYABLE_STATUS and intento == 0:
+            continue
+        break
+
+    if not isinstance(res, dict):
         return None
 
-    if res.get('status') == 'OK' and res.get('results'):
+    status = str(res.get('status', '')).upper()
+    if status == 'OK' and res.get('results'):
         loc = res['results'][0]['geometry']['location']
         return {
             'lat': loc['lat'],
@@ -801,7 +701,10 @@ def buscar_direccion_texto(texto):
             'prioridad': 'media',
             'estado': 'pendiente',
         }
-    print(f'No se encontraron resultados para "{texto}".')
+    if status == 'ZERO_RESULTS':
+        print(f'No se encontraron resultados para "{texto}".')
+    else:
+        print(f'No se pudo geocodificar "{texto}" (status: {status or "desconocido"}).')
     return None
 
 
@@ -827,7 +730,7 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Regla de las 19:00 (hora local)
     --------------------------------
     Si ``hora_actual`` (entero 0-23) es >= 19, las paradas **pendientes** se
-    reordenan primero por prioridad (alta > media > baja) y dentro de cada
+    reordenan primero por prioridad (alta > media > sin prioridad) y dentro de cada
     grupo de prioridad se aplica la heurística del vecino más cercano para
     minimizar la distancia recorrida.
 
@@ -935,32 +838,7 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
 
 
 def main():
-    filename = DEFAULT_PHOTO_FILENAME
-    try:
-        if os.path.exists(filename):
-            print(f'Usando imagen existente: {filename}')
-        else:
-            filename = take_photo(filename)
-            print(f'Foto preparada como {filename}')
-    except Exception as err:
-        print(f'Error al preparar la imagen: {err}')
-
-    direccion, cp = procesar_imagen(filename)
-    print(f'\nResultado -> Dirección: {direccion} | CP: {cp}')
-
-    if direccion and cp:
-        geo = obtener_coordenadas(direccion, cp)
-        if geo:
-            geo = asignar_prioridad(geo, 'media')
-            lista_paradas.append(geo)
-            print(f'Añadido a la ruta con prioridad {geo["prioridad"]}: {geo["address"]}')
-        else:
-            print('No se pudo obtener coordenadas para la dirección proporcionada.')
-    else:
-        print('No hay dirección o código postal válidos para geocodificar.')
-
-    link = generar_ruta_maps(lista_paradas, 'moto')
-    print(f'\nLINK DE REPARTO: \n{link}')
+    print('El reconocimiento OCR fue retirado. Usa la app con entrada manual o voz.')
 
 
 if __name__ == '__main__':

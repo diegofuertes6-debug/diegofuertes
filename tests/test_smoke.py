@@ -16,7 +16,7 @@ class PriorizacionTests(unittest.TestCase):
 
     def _paradas(self):
         return [
-            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja', 'estado': 'pendiente'},
+            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'sin prioridad', 'estado': 'pendiente'},
             {'address': 'B', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta', 'estado': 'pendiente'},
             {'address': 'C', 'lat': 40.2, 'lng': -3.2, 'prioridad': 'media', 'estado': 'pendiente'},
         ]
@@ -34,15 +34,18 @@ class PriorizacionTests(unittest.TestCase):
         paradas = self._paradas()
         ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
         prioridades = [p['prioridad'] for p in ordenadas]
-        # alta debe ir antes que media y baja
+        # alta debe ir antes que media y sin prioridad
         self.assertEqual(prioridades[0], 'alta')
 
-    def test_priorizar_despues_19_alta_media_baja(self):
-        """A las 20:00 el orden debe ser alta > media > baja."""
+    def test_priorizar_despues_19_alta_media_sin_prioridad(self):
+        """A las 20:00 el orden debe ser alta > media > sin prioridad."""
         paradas = self._paradas()
         ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=20)
         prioridades = [p['prioridad'] for p in ordenadas]
-        orden_esperado = sorted(prioridades, key=lambda p: {'alta': 0, 'media': 1, 'baja': 2}[p])
+        orden_esperado = sorted(
+            prioridades,
+            key=lambda p: {'alta': 0, 'media': 1, 'sin prioridad': 2}[p],
+        )
         self.assertEqual(prioridades, orden_esperado)
 
     def test_modo_invalido_usa_moto(self):
@@ -61,10 +64,10 @@ class AsignarPrioridadTests(unittest.TestCase):
         resultado = repartidor.asignar_prioridad(parada, 'ALTA')
         self.assertEqual(resultado['prioridad'], 'alta')
 
-    def test_asignar_prioridad_valor_invalido_usa_media(self):
+    def test_asignar_prioridad_valor_invalido_usa_sin_prioridad(self):
         parada = {'address': 'Y'}
         resultado = repartidor.asignar_prioridad(parada, 'urgente')
-        self.assertEqual(resultado['prioridad'], 'media')
+        self.assertEqual(resultado['prioridad'], 'sin prioridad')
 
     def test_asignar_prioridad_no_dict_devuelve_original(self):
         resultado = repartidor.asignar_prioridad('no-dict', 'alta')
@@ -150,43 +153,28 @@ class ModoTransporteTests(unittest.TestCase):
 
 
 class PrioridadColorTests(unittest.TestCase):
-    def test_mapeo_centralizado_rojo_naranja_verde(self):
-        self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'baja'))
+    def test_mapeo_centralizado_rojo_naranja_azul(self):
+        self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'sin prioridad'))
         self.assertEqual(repartidor.PRIORITY_COLORS['alta'], (1.0, 0.0, 0.0, 1.0))
         self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 0.5, 0.0, 1.0))
-        self.assertEqual(repartidor.PRIORITY_COLORS['baja'], (0.0, 1.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['sin prioridad'], (0.0, 0.4, 1.0, 1.0))
 
 
 class AndroidManifestHookTests(unittest.TestCase):
-    def test_provider_se_inserta_como_hijo_de_application_una_vez(self):
+    def test_patch_manifest_no_modifica_archivo(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = Path(tmp) / 'AndroidManifest.xml'
             manifest.write_text(
                 '<manifest><application></application></manifest>',
                 encoding='utf-8',
             )
-            p4a_hook.inject_file_provider(manifest)
-            p4a_hook.inject_file_provider(manifest)
-            resultado = manifest.read_text(encoding='utf-8')
-
-        self.assertEqual(resultado.count(p4a_hook.PROVIDER_MARKER), 1)
-        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
-
-    def test_query_camara_es_hijo_de_manifest_e_idempotente(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest = Path(tmp) / 'AndroidManifest.xml'
-            manifest.write_text(
-                '<manifest><application></application></manifest>',
-                encoding='utf-8',
-            )
-            p4a_hook.patch_manifest(manifest)
+            original = manifest.read_text(encoding='utf-8')
             p4a_hook.patch_manifest(manifest)
             resultado = manifest.read_text(encoding='utf-8')
+        self.assertEqual(resultado, original)
 
-        self.assertEqual(resultado.count(p4a_hook.CAMERA_ACTION), 1)
-        self.assertLess(resultado.index('<queries>'), resultado.index('<application'))
-        self.assertGreater(resultado.index('<provider'), resultado.index('<application'))
-        self.assertLess(resultado.index('<provider'), resultado.index('</application>'))
+    def test_after_apk_build_no_falla(self):
+        self.assertIsNone(p4a_hook.after_apk_build(object()))
 
 
 class PermisosGeolocalTests(unittest.TestCase):
@@ -209,76 +197,6 @@ class AndroidServicesTests(unittest.TestCase):
     @patch('android_services.is_android', return_value=False)
     def test_ubicacion_habilitada_en_escritorio(self, _mock):
         self.assertTrue(android_services.is_location_enabled())
-
-    @patch('android_services.is_android', return_value=True)
-    def test_camara_inicia_intent_desde_mactivity(self, _mock):
-        bound_callbacks = {}
-        activity_bridge = types.SimpleNamespace(
-            bind=lambda **callbacks: bound_callbacks.update(callbacks),
-            unbind=lambda **_callbacks: None,
-        )
-        java_activity = MagicMock()
-        java_activity.getPackageName.return_value = 'org.test.repartidorapp'
-        java_activity.getPackageManager.return_value = object()
-
-        class FakeIntent:
-            FLAG_GRANT_READ_URI_PERMISSION = 1
-            FLAG_GRANT_WRITE_URI_PERMISSION = 2
-
-            def __init__(self, _action):
-                self.extras = {}
-
-            def putExtra(self, key, value):
-                self.extras[key] = value
-
-            def setClipData(self, _clip):
-                return None
-
-            def addFlags(self, _flags):
-                return None
-
-            def resolveActivity(self, _manager):
-                return object()
-
-        fake_classes = {
-            'android.content.ClipData': types.SimpleNamespace(
-                newRawUri=lambda _label, uri: uri
-            ),
-            'java.io.File': lambda path: path,
-            'androidx.core.content.FileProvider': types.SimpleNamespace(
-                getUriForFile=lambda _activity, _authority, _file: 'content://capture'
-            ),
-            'android.content.Intent': FakeIntent,
-            'android.provider.MediaStore': types.SimpleNamespace(
-                ACTION_IMAGE_CAPTURE='android.media.action.IMAGE_CAPTURE',
-                EXTRA_OUTPUT='output',
-            ),
-        }
-        android_module = types.ModuleType('android')
-        android_module.activity = activity_bridge
-        android_module.mActivity = java_activity
-        jnius_module = types.ModuleType('jnius')
-        jnius_module.autoclass = lambda name: fake_classes[name]
-        jnius_module.cast = lambda _class_name, value: value
-
-        try:
-            with tempfile.TemporaryDirectory() as tmp, patch.dict(
-                sys.modules,
-                {'android': android_module, 'jnius': jnius_module},
-            ):
-                android_services.capture_photo(
-                    str(Path(tmp) / 'capture.jpg'),
-                    lambda _path: None,
-                    self.fail,
-                )
-            self.assertIn('on_activity_result', bound_callbacks)
-            java_activity.startActivityForResult.assert_called_once()
-            self.assertEqual(
-                java_activity.startActivityForResult.call_args.args[1],
-                android_services.CAMERA_REQUEST_CODE,
-            )
-        finally:
-            android_services._camera_callback = None
 
     @patch('android_services.is_android', return_value=True)
     def test_maps_se_abre_mediante_action_view(self, _mock):
@@ -348,7 +266,7 @@ class AndroidServicesTests(unittest.TestCase):
     def test_permisos_no_android_responde_sin_solicitar(self, _mock):
         resultado = []
         android_services.request_runtime_permissions(
-            android_services.CAMERA_PERMISSIONS,
+            android_services.MICROPHONE_PERMISSIONS,
             lambda concedido, denegados: resultado.append((concedido, denegados)),
         )
         self.assertEqual(resultado, [(True, [])])
@@ -371,14 +289,14 @@ class AndroidServicesTests(unittest.TestCase):
             },
         ):
             android_services.request_runtime_permissions(
-                android_services.CAMERA_PERMISSIONS,
+                android_services.MICROPHONE_PERMISSIONS,
                 lambda concedido, denegados: resultado.append(
                     (concedido, denegados)
                 ),
             )
         self.assertEqual(
             resultado,
-            [(False, list(android_services.CAMERA_PERMISSIONS))],
+            [(False, list(android_services.MICROPHONE_PERMISSIONS))],
         )
 
     def test_reconocimiento_voz_concurrente_se_rechaza(self):
@@ -395,33 +313,15 @@ class AndroidServicesTests(unittest.TestCase):
 
 
 class OcrDireccionTests(unittest.TestCase):
-    def test_extrae_direccion_y_codigo_postal(self):
-        direccion, cp = repartidor.extraer_direccion_texto_ocr(
-            'Entrega para Calle Mayor 15, 28013 Madrid'
-        )
-        self.assertTrue(direccion.startswith('Calle Mayor 15'))
-        self.assertEqual(cp, '28013')
-
-    def test_texto_ocr_vacio(self):
-        self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
-
-    def test_ocr_devuelve_varios_candidatos_sin_lineas_de_ruido(self):
-        candidatos = repartidor.extraer_candidatos_direccion_ocr(
-            'PEDIDO 123\nCalle Mayor 15\n28013 Madrid\n'
-            'Avenida de América 24, 28028 Madrid\nTOTAL 19,95'
-        )
-        self.assertEqual(len(candidatos), 2)
-        self.assertTrue(candidatos[0].startswith(('Calle', 'Avenida')))
-        self.assertNotIn('PEDIDO', ' '.join(candidatos))
-        self.assertNotIn('TOTAL', ' '.join(candidatos))
-
-    def test_ocr_acepta_abreviatura_y_lineas_separadas(self):
+    def test_ocr_desactivado_devuelve_vacios(self):
         self.assertEqual(
-            repartidor.extraer_candidatos_direccion_ocr(
-                'C/ Mayor\n15\n28013 Madrid'
+            repartidor.extraer_direccion_texto_ocr(
+                'Entrega para Calle Mayor 15, 28013 Madrid'
             ),
-            ['C/ Mayor, 15, 28013 Madrid'],
+            ('', ''),
         )
+        self.assertEqual(repartidor.extraer_direccion_texto_ocr('  '), ('', ''))
+        self.assertEqual(repartidor.extraer_candidatos_direccion_ocr('texto'), [])
 
 
 class AnadirParadaComunTests(unittest.TestCase):
@@ -440,7 +340,7 @@ class AnadirParadaComunTests(unittest.TestCase):
             '  Calle   Mayor 15, 28013 Madrid  ',
             geocodificador=self.geocodificador,
             prioridad='alta',
-            paqueteria='Urgente',
+            paqueteria='Grande',
             notificacion='Carta certificada',
         )
         self.assertIsNone(error)
@@ -448,8 +348,8 @@ class AnadirParadaComunTests(unittest.TestCase):
         self.geocodificador.assert_called_once_with('Calle Mayor 15, 28013 Madrid')
         self.assertEqual(parada['prioridad'], 'alta')
         self.assertEqual(parada['estado'], 'pendiente')
-        self.assertEqual(parada['paqueteria'], 'Urgente')
-        self.assertEqual(parada['notificacion'], 'Certificada')
+        self.assertEqual(parada['paqueteria'], 'Grande')
+        self.assertEqual(parada['notificacion'], 'Cartas')
 
     def test_rechaza_vacia_o_invalida_sin_geocodificar(self):
         for texto in ('', '   ', '1234'):
@@ -519,88 +419,6 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app.lista_widget = None
         return app
 
-    def test_camara_ocr_inicia_geocodificacion_y_limpia_temporal(self):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'scan.jpg'
-            foto.write_bytes(b'image')
-            app._ejecutar_en_segundo_plano = MagicMock()
-            app._procesar_texto_ocr('Calle Alcalá 10\n28014 Madrid', str(foto))
-            app._ejecutar_en_segundo_plano.assert_called_once()
-            self.assertIn('Geocodificando', app.lbl_estado.text)
-            self.assertFalse(foto.exists())
-            self.assertFalse(app._camera_en_curso)
-
-    def test_segunda_camara_no_borra_captura_en_curso(self):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'temp_scan.jpg'
-            foto.write_bytes(b'image-in-progress')
-            app.user_data_dir = tmp
-            app._camera_en_curso = True
-            with patch('main.android_services.capture_photo') as captura:
-                app._abrir_camara()
-            captura.assert_not_called()
-            self.assertEqual(foto.read_bytes(), b'image-in-progress')
-            self.assertIn('en curso', app.lbl_estado.text)
-
-    @patch(
-        'main.repartidor.leer_texto_imagen',
-        return_value=(
-            'Calle Alcalá 10, 28014 Madrid\n'
-            'Avenida de América 24, 28028 Madrid'
-        ),
-    )
-    @patch('main.android_services.is_android', return_value=False)
-    def test_camara_escritorio_inicia_geocodificacion_automatica(
-        self, _android, _ocr
-    ):
-        app = self._app()
-        with tempfile.TemporaryDirectory() as tmp:
-            foto = Path(tmp) / 'scan.jpg'
-            foto.write_bytes(b'image')
-            app._ejecutar_en_segundo_plano = MagicMock()
-            app._procesar_foto(str(foto))
-
-        app._ejecutar_en_segundo_plano.assert_called_once()
-        self.assertIn('Geocodificando', app.lbl_estado.text)
-        self.assertFalse(foto.exists())
-        self.assertFalse(app._camera_en_curso)
-
-    def test_finalizar_ocr_exito_aniade_parada_y_abre_maps(self):
-        app = self._app()
-        componentes = {
-            'calle_tipo': 'Calle',
-            'calle_nombre': 'Mayor',
-            'numero': '42',
-            'codigo_postal': '28001',
-            'poblacion': 'Madrid',
-            'direccion_completa': 'Calle Mayor 42, 28001 Madrid',
-        }
-        resultado = {'lat': 40.416, 'lng': -3.703, 'address': 'Calle Mayor 42, Madrid'}
-        app._abrir_maps_ubicacion = MagicMock()
-        app._finalizar_ocr(componentes, resultado, '')
-        self.assertEqual(len(app.lista_paradas), 1)
-        self.assertEqual(app.lista_paradas[0]['address'], 'Calle Mayor 42, Madrid')
-        app._abrir_maps_ubicacion.assert_called_once_with(40.416, -3.703)
-        self.assertIn('Maps', app.lbl_estado.text)
-
-    def test_finalizar_ocr_fallo_geocodificacion_muestra_error(self):
-        app = self._app()
-        componentes = {
-            'calle_tipo': '',
-            'calle_nombre': '',
-            'numero': '',
-            'codigo_postal': '',
-            'poblacion': '',
-            'direccion_completa': 'Dirección inexistente XYZ',
-        }
-        app._abrir_maps_ubicacion = MagicMock()
-        app._finalizar_ocr(componentes, None, 'sin resultados')
-        self.assertEqual(len(app.lista_paradas), 0)
-        app._abrir_maps_ubicacion.assert_not_called()
-        self.assertIn('sin resultados', app.lbl_estado.text)
-
     @patch('main.repartidor.dictar_direccion', return_value='Gran Vía 28, Madrid')
     @patch('main.android_services.is_android', return_value=False)
     def test_microfono_propone_texto_para_confirmar(self, _android, _dictado):
@@ -610,6 +428,15 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app._mostrar_confirmacion.assert_called_once_with(
             ['Gran Vía 28, Madrid'], 'micrófono'
         )
+
+    @patch('main.android_services.is_android', return_value=False)
+    def test_microfono_vacio_muestra_error(self, _android):
+        app = self._app()
+        app._mostrar_confirmacion = MagicMock()
+        with patch('main.repartidor.dictar_direccion', return_value='  '):
+            app.dictar_microfono()
+        app._mostrar_confirmacion.assert_not_called()
+        self.assertIn('No se captó voz', app.lbl_estado.text)
 
     def test_lupa_y_enter_comparten_busqueda_manual(self):
         app = self._app()
@@ -621,28 +448,13 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         )
         self.assertEqual(app.txt_busqueda.text, '')
 
-    def test_exactamente_tres_acciones_unicas_y_accesibles(self):
-        self.assertEqual(len(main.STOP_ACTIONS), 3)
-        self.assertEqual(
-            [accion[0] for accion in main.STOP_ACTIONS],
-            ['texto', 'voz', 'escaner'],
-        )
-        self.assertEqual(
-            [accion[1] for accion in main.STOP_ACTIONS],
-            ['🔍', '🎙', '📷'],
-        )
-        self.assertEqual(
-            [accion[2] for accion in main.STOP_ACTIONS],
-            ['Texto', 'Voz', 'Escáner'],
-        )
-        self.assertEqual(
-            {accion[4] for accion in main.STOP_ACTIONS},
-            {'buscar_manual', 'dictar_microfono', 'escanear_camara'},
-        )
-        self.assertTrue(all(accion[3].strip() for accion in main.STOP_ACTIONS))
+    def test_acciones_visibles_lupa_y_microfono(self):
+        self.assertEqual(main.SEARCH_ICON, '🔍')
+        self.assertEqual(main.VOICE_ICON, '🎙')
+        self.assertNotEqual(main.SEARCH_ICON, main.VOICE_ICON)
 
     @patch('main.repartidor.buscar_direccion_texto')
-    def test_camara_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
+    def test_voz_y_escritura_geocodifican_por_el_mismo_alta(self, geocode):
         geocode.side_effect = lambda texto: {
             'address': texto,
             'lat': 40.4168,
@@ -656,29 +468,36 @@ class FlujosEntradaParadaTests(unittest.TestCase):
             def dismiss(self):
                 return None
 
-        for origen, direccion in (
-            ('cámara', 'Calle Cámara 10'),
-            ('micrófono', 'Calle Voz 20'),
-        ):
-            app._confirmar_propuesta(
-                PopupFake(),
-                types.SimpleNamespace(text=direccion),
-                origen,
-                types.SimpleNamespace(text=''),
-            )
+        app._confirmar_propuesta(
+            PopupFake(),
+            types.SimpleNamespace(text='Calle Voz 20'),
+            'micrófono',
+            types.SimpleNamespace(text=''),
+        )
         app.txt_busqueda.text = 'Calle Escrita 30'
         app.buscar_manual()
 
-        self.assertEqual(geocode.call_count, 3)
+        self.assertEqual(geocode.call_count, 2)
         self.assertEqual(
             {parada['origen'] for parada in app.lista_paradas},
-            {'cámara', 'micrófono', 'búsqueda'},
+            {'micrófono', 'búsqueda'},
         )
         self.assertTrue(all(
             parada['estado'] == 'geolocalizada'
             and repartidor.coordenadas_validas(parada['lat'], parada['lng'])
             for parada in app.lista_paradas
         ))
+
+    def test_detecta_paradas_pendientes_o_invalidas(self):
+        app = self._app()
+        app.lista_paradas = [
+            {'address': 'A', 'estado': 'geolocalizando'},
+            {'address': 'B', 'estado': 'geolocalizada', 'lat': 40.4, 'lng': -3.7},
+            {'address': 'C', 'estado': 'error'},
+        ]
+        pendientes = app._paradas_pendientes_o_invalidas()
+        self.assertEqual(len(pendientes), 2)
+        self.assertEqual({p['address'] for p in pendientes}, {'A', 'C'})
 
     @patch('main.webbrowser.open')
     @patch('main.android_services.is_android', return_value=True)
@@ -760,16 +579,13 @@ class FlujosEntradaParadaTests(unittest.TestCase):
 
 
 class SelectoresEntregaTests(unittest.TestCase):
-    def test_paqueteria_muestra_solo_urgente_y_normal(self):
-        self.assertEqual(repartidor.PACKAGE_OPTIONS, ('Urgente', 'Normal'))
-        self.assertEqual(repartidor.DEFAULT_PACKAGE, 'Normal')
+    def test_paqueteria_muestra_tamanos_pequeno_mediano_grande(self):
+        self.assertEqual(repartidor.PACKAGE_OPTIONS, ('Pequeño', 'Mediano', 'Grande'))
+        self.assertEqual(repartidor.DEFAULT_PACKAGE, 'Mediano')
 
     def test_selector_y_opciones_de_cartas_no_muestran_notificaciones(self):
         self.assertEqual(main._SELECT_CARTAS, 'Cartas')
-        self.assertEqual(
-            repartidor.LETTER_OPTIONS,
-            ('Sin cartas', 'Ordinaria', 'Certificada'),
-        )
+        self.assertEqual(repartidor.LETTER_OPTIONS, ('Cartas',))
         self.assertNotIn('notificación', ' '.join(repartidor.LETTER_OPTIONS).lower())
 
     def test_normaliza_valores_legacy_persistidos(self):
@@ -779,12 +595,10 @@ class SelectoresEntregaTests(unittest.TestCase):
             'notificacion': 'SMS',
         }
         repartidor.normalizar_metadatos_parada(parada)
-        self.assertEqual(parada['paqueteria'], 'Normal')
-        self.assertEqual(parada['notificacion'], 'Sin cartas')
-        self.assertEqual(repartidor.normalizar_paqueteria('Express 24h'), 'Urgente')
-        self.assertEqual(
-            repartidor.normalizar_cartas('Carta certificada'), 'Certificada'
-        )
+        self.assertEqual(parada['paqueteria'], 'Mediano')
+        self.assertEqual(parada['notificacion'], 'Cartas')
+        self.assertEqual(repartidor.normalizar_paqueteria('Express 24h'), 'Grande')
+        self.assertEqual(repartidor.normalizar_cartas('Carta certificada'), 'Cartas')
 
     def test_callbacks_guardan_paqueteria_y_cartas_canonicas(self):
         app = main.RepartidorApp()
@@ -795,11 +609,11 @@ class SelectoresEntregaTests(unittest.TestCase):
         app._on_paqueteria_cambio(paquete, 'Express 24h')
         app._on_notificacion_cambio(cartas, 'Carta ordinaria')
 
-        self.assertEqual(app._paqueteria, 'Urgente')
-        self.assertEqual(paquete.text, 'Urgente')
-        self.assertEqual(app._notificacion, 'Ordinaria')
+        self.assertEqual(app._paqueteria, 'Grande')
+        self.assertEqual(paquete.text, 'Grande')
+        self.assertEqual(app._notificacion, 'Cartas')
         self.assertEqual(cartas.text, 'Cartas')
-        self.assertIn('Cartas: Ordinaria', app.lbl_estado.text)
+        self.assertIn('Tipo de entrega: Cartas', app.lbl_estado.text)
 
 
 class InicioUbicacionTests(unittest.TestCase):
@@ -904,13 +718,31 @@ class BuscarDireccionTests(unittest.TestCase):
         parada = repartidor.buscar_direccion_texto('LugarImaginario XYZ')
         self.assertIsNone(parada)
 
+    @patch('repartidor.requests')
+    @patch('repartidor.API_KEY', 'TEST_KEY')
+    def test_buscar_direccion_reintenta_unknown_error(self, mock_requests):
+        primer_resp = MagicMock()
+        primer_resp.json.return_value = {'status': 'UNKNOWN_ERROR', 'results': []}
+        segundo_resp = MagicMock()
+        segundo_resp.json.return_value = {
+            'status': 'OK',
+            'results': [{
+                'geometry': {'location': {'lat': 40.4, 'lng': -3.7}},
+                'formatted_address': 'Madrid, España',
+            }],
+        }
+        mock_requests.get.side_effect = [primer_resp, segundo_resp]
+        parada = repartidor.buscar_direccion_texto('Madrid')
+        self.assertIsNotNone(parada)
+        self.assertEqual(mock_requests.get.call_count, 2)
+
 
 class ReglaHoraria19Tests(unittest.TestCase):
     """Pruebas específicas para la regla de priorización a las 19:00."""
 
     def test_antes_19_no_aplica_prioridad_estricta(self):
         paradas = [
-            {'address': 'Baja', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja'},
+            {'address': 'Sin prioridad', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'sin prioridad'},
             {'address': 'Alta', 'lat': 40.5, 'lng': -3.5, 'prioridad': 'alta'},
         ]
         # Antes de las 19:00: el orden depende de nearest-neighbor, no de prioridad
@@ -927,13 +759,13 @@ class ReglaHoraria19Tests(unittest.TestCase):
         paradas = [
             {'address': 'A1', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'alta'},
             {'address': 'A2', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta'},
-            {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'baja'},
+            {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'sin prioridad'},
         ]
         result = repartidor.priorizar_paradas(paradas, hora_actual=19)
         # Primero deben salir las dos de alta
         self.assertEqual(result[0]['prioridad'], 'alta')
         self.assertEqual(result[1]['prioridad'], 'alta')
-        self.assertEqual(result[2]['prioridad'], 'baja')
+        self.assertEqual(result[2]['prioridad'], 'sin prioridad')
 
 
 class LegacyCompatTests(unittest.TestCase):
@@ -953,7 +785,7 @@ class LegacyCompatTests(unittest.TestCase):
     def test_priorizar_paradas_orden_correcto_hora_19(self):
         """Compatibilidad: alta primero a las 19:00."""
         paradas = [
-            {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'baja'},
+            {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'sin prioridad'},
             {'address': 'B', 'lat': 1.1, 'lng': 1.1, 'prioridad': 'alta'},
             {'address': 'C', 'lat': 1.2, 'lng': 1.2, 'prioridad': 'media'},
         ]

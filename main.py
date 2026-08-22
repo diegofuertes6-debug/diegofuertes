@@ -39,11 +39,8 @@ CONFIG_FILE = 'webServerApiSettings.json'
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_CARTAS = 'Cartas'
-STOP_ACTIONS = (
-    ('texto', '🔍', 'Texto', 'Validar y añadir dirección escrita', 'buscar_manual'),
-    ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
-    ('escaner', '📷', 'Escáner', 'Escanear, revisar y añadir dirección', 'escanear_camara'),
-)
+SEARCH_ICON = '🔍'
+VOICE_ICON = '🎙'
 
 
 def _project_dir():
@@ -78,8 +75,6 @@ class RepartidorApp(App if App is not object else object):
         self._notificacion = repartidor.DEFAULT_LETTER
         self._clock_19 = None
         self._popup_confirmacion = None
-        self._temp_scan_path = None
-        self._camera_en_curso = False
         self._location_permission_requested = False
         self._location_permission_denied = False
         self._location_request_in_progress = False
@@ -124,7 +119,7 @@ class RepartidorApp(App if App is not object else object):
         )
         root.add_widget(self.lbl_estado)
 
-        # ---- Alta de parada: un campo y exactamente tres acciones ----
+        # ---- Alta de parada: un campo y dos acciones ----
         fila_buscar = BoxLayout(size_hint_y=None, height='64dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
@@ -134,37 +129,42 @@ class RepartidorApp(App if App is not object else object):
         )
         self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
         fila_buscar.add_widget(self.txt_busqueda)
-        colores = (
-            (0.95, 0.55, 0.1, 1),
-            (0.2, 0.7, 0.3, 1),
-            (0.1, 0.6, 0.9, 1),
+        btn_buscar = Button(
+            text=SEARCH_ICON,
+            size_hint_x=None,
+            width='56dp',
+            font_size='22sp',
+            background_normal='',
+            background_color=(0.95, 0.55, 0.1, 1),
         )
-        for (_identificador, icono, texto, etiqueta, handler), color in zip(
-            STOP_ACTIONS, colores
-        ):
-            boton = Button(
-                text=f'{icono}\n{texto}',
-                size_hint_x=None,
-                width='60dp',
-                font_size='14sp',
-                background_normal='',
-                background_color=color,
-            )
-            boton.tooltip_text = etiqueta
-            boton.accessibility_label = etiqueta
-            boton.bind(on_press=getattr(self, handler))
-            fila_buscar.add_widget(boton)
+        btn_buscar.tooltip_text = 'Buscar dirección escrita'
+        btn_buscar.accessibility_label = 'Buscar dirección escrita'
+        btn_buscar.bind(on_press=self.buscar_manual)
+        fila_buscar.add_widget(btn_buscar)
+
+        btn_voz = Button(
+            text=VOICE_ICON,
+            size_hint_x=None,
+            width='56dp',
+            font_size='22sp',
+            background_normal='',
+            background_color=(0.2, 0.7, 0.3, 1),
+        )
+        btn_voz.tooltip_text = 'Dictar dirección por voz'
+        btn_voz.accessibility_label = 'Dictar dirección por voz'
+        btn_voz.bind(on_press=self.dictar_microfono)
+        fila_buscar.add_widget(btn_voz)
         root.add_widget(fila_buscar)
 
         # ---- Selección prioridad y modo transporte ----
         fila_opts = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
         fila_opts.add_widget(Label(text='Prioridad:', size_hint_x=0.3, font_size='13sp'))
         self.spinner_prioridad = Spinner(
-            text='media',
+            text='sin prioridad',
             values=_PRIORIDAD_VALS,
             size_hint_x=0.35,
             background_normal='',
-            background_color=repartidor.PRIORITY_COLORS['media'],
+            background_color=repartidor.PRIORITY_COLORS['sin prioridad'],
         )
         self.spinner_prioridad.bind(text=self._on_prioridad_cambio)
         fila_opts.add_widget(self.spinner_prioridad)
@@ -217,7 +217,7 @@ class RepartidorApp(App if App is not object else object):
 
         self._programar_reloj_19()
         if Clock:
-            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0.5)
+            Clock.schedule_once(self._solicitar_ubicacion_inicial, 0)
         else:
             self._solicitar_ubicacion_inicial()
 
@@ -406,136 +406,10 @@ class RepartidorApp(App if App is not object else object):
     # ------------------------------------------------------------------
     # Entrada de paradas
     # ------------------------------------------------------------------
-    def escanear_camara(self, *_args):
-        """Take a photo and propose its OCR address for confirmation."""
-        if android_services.is_android():
-            self._set_estado('Solicitando acceso a la cámara…')
-            android_services.request_runtime_permissions(
-                android_services.CAMERA_PERMISSIONS,
-                self._on_permiso_camara,
-            )
-            return
-        self._abrir_camara()
-
-    def _on_permiso_camara(self, concedido, _denegados):
-        if not concedido:
-            self._set_estado(
-                'Permiso de cámara denegado. Puedes escribir la dirección manualmente.'
-            )
-            return
-        self._abrir_camara()
-
-    def _abrir_camara(self):
-        if self._camera_en_curso:
-            self._set_estado('Ya hay una captura de cámara en curso.')
-            return
-        self._set_estado('Abriendo cámara…')
-        filepath = os.path.join(self.user_data_dir, 'temp_scan.jpg')
-        self._temp_scan_path = filepath
-        self._camera_en_curso = True
-        self._eliminar_temporal(filepath)
-        android_services.capture_photo(
-            filepath,
-            self._procesar_foto,
-            lambda error: self._error_captura(error, filepath),
-        )
-
-    def _procesar_foto(self, filepath):
-        filepath = filepath or os.path.join(self.user_data_dir, 'temp_scan.jpg')
-        if not os.path.isfile(filepath):
-            self._camera_en_curso = False
-            self._set_estado('No se capturó ninguna imagen.')
-            self._temp_scan_path = None
-            return
-        self._set_estado('Procesando imagen…')
-        if android_services.is_android():
-            android_services.recognize_image_text(
-                filepath,
-                lambda texto: self._procesar_texto_ocr(texto, filepath),
-                lambda error: self._error_captura(error, filepath),
-            )
-            return
-        texto = repartidor.leer_texto_imagen(filepath)
-        self._procesar_texto_ocr(texto, filepath)
-
-    def _procesar_texto_ocr(self, texto, filepath):
-        try:
-            componentes = repartidor.construir_direccion_estructurada(texto)
-            direccion_completa = componentes.get('direccion_completa', '').strip()
-            if direccion_completa:
-                self._set_estado(
-                    f'Dirección detectada: {direccion_completa}. Geocodificando…'
-                )
-                self._ejecutar_en_segundo_plano(
-                    lambda: self._geocodificar_y_abrir_ocr(componentes)
-                )
-            else:
-                candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
-                if candidatos:
-                    self._mostrar_confirmacion(candidatos, 'cámara')
-                else:
-                    self._set_estado('No se detectó una dirección válida en la imagen.')
-        finally:
-            self._eliminar_temporal(filepath)
-            self._temp_scan_path = None
-            self._camera_en_curso = False
-
-    def _geocodificar_y_abrir_ocr(self, componentes):
-        """Geocode structured OCR address, add stop, and open Maps automatically."""
-        direccion_completa = componentes.get('direccion_completa', '')
-        resultado, detalle = repartidor.resolver_geocodificacion(
-            direccion_completa,
-            geocodificador=repartidor.buscar_direccion_texto,
-        )
-        self._dispatch_ui(
-            lambda: self._finalizar_ocr(componentes, resultado, detalle)
-        )
-
-    def _finalizar_ocr(self, componentes, resultado, detalle):
-        direccion_completa = componentes.get('direccion_completa', '')
-        if not isinstance(resultado, dict) or not repartidor.coordenadas_validas(
-            resultado.get('lat'), resultado.get('lng')
-        ):
-            self._set_estado(
-                f'No se geocodificó "{direccion_completa}". '
-                f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
-            )
-            return
-        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
-        resultado['prioridad'] = prioridad
-        resultado['paqueteria'] = self._paqueteria
-        resultado['notificacion'] = self._notificacion
-        resultado['estado'] = 'pendiente'
-        resultado.setdefault('address', direccion_completa)
-        self.lista_paradas.append(resultado)
-        self._set_estado(
-            f'Parada añadida desde cámara: {resultado["address"]}. Abriendo Maps…'
-        )
-        self._refrescar_lista()
-        self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
-
     def _abrir_maps_ubicacion(self, lat, lng):
         """Open Google Maps centered on the given coordinates (non-blocking)."""
         url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
         self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
-
-    def _usar_direccion_ocr(self, direccion, cp):
-        if direccion and cp:
-            texto = f'{direccion}, {cp}'
-        elif direccion:
-            texto = direccion
-        else:
-            self._set_estado('No se detectó una dirección válida en la imagen.')
-            return
-        componentes = repartidor.construir_direccion_estructurada(texto)
-        direccion_completa = componentes.get('direccion_completa') or texto
-        self._mostrar_confirmacion([direccion_completa], 'cámara')
-
-    def _error_captura(self, error, filepath):
-        self._eliminar_temporal(filepath)
-        self._temp_scan_path = None
-        self._camera_en_curso = False
-        self._set_estado(error)
 
     def dictar_microfono(self, *_args):
         """Dicta una dirección por voz y añade la parada."""
@@ -548,13 +422,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Escuchando micrófono…')
         texto = repartidor.dictar_direccion()
-        if texto:
-            self._mostrar_confirmacion([texto], 'micrófono')
-        else:
-            self._set_estado(
-                'No se captó voz.\n'
-                'Asegúrate de tener micrófono y SpeechRecognition instalado.'
-            )
+        self._on_texto_microfono(texto)
 
     def _on_permiso_microfono(self, concedido, _denegados):
         if not concedido:
@@ -564,9 +432,19 @@ class RepartidorApp(App if App is not object else object):
             return
         self._set_estado('Di ahora la dirección completa…')
         android_services.start_speech_recognition(
-            lambda texto: self._mostrar_confirmacion([texto], 'micrófono'),
+            self._on_texto_microfono,
             self._set_estado,
         )
+
+    def _on_texto_microfono(self, texto):
+        texto = repartidor.normalizar_direccion(texto or '')
+        if not texto:
+            self._set_estado(
+                'No se captó voz.\n'
+                'Asegúrate de tener micrófono y SpeechRecognition instalado.'
+            )
+            return
+        self._mostrar_confirmacion([texto], 'micrófono')
 
     def buscar_manual(self, *_args):
         """Geocodifica la dirección escrita manualmente."""
@@ -689,7 +567,9 @@ class RepartidorApp(App if App is not object else object):
             self.txt_busqueda.text = ''
 
     def _validar_y_anadir(self, texto, origen):
-        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        prioridad = (
+            self.spinner_prioridad.text if self.spinner_prioridad else 'sin prioridad'
+        )
         parada, error = repartidor.iniciar_alta_parada(
             self.lista_paradas,
             texto,
@@ -772,6 +652,9 @@ class RepartidorApp(App if App is not object else object):
         if self.lista_widget is None:
             return
         self.lista_widget.clear_widgets()
+        index_by_object = {
+            id(parada): indice for indice, parada in enumerate(self.lista_paradas)
+        }
 
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
@@ -789,8 +672,8 @@ class RepartidorApp(App if App is not object else object):
             estado = parada.get('estado', 'pendiente')
             fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
             color = repartidor.PRIORITY_COLORS.get(
-                parada.get('prioridad', 'media'),
-                repartidor.PRIORITY_COLORS['media'],
+                parada.get('prioridad', 'sin prioridad'),
+                repartidor.PRIORITY_COLORS['sin prioridad'],
             )
             lbl = Label(
                 text=(
@@ -810,7 +693,7 @@ class RepartidorApp(App if App is not object else object):
                 background_normal='',
                 background_color=color,
             )
-            real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
+            real_idx = index_by_object.get(id(parada), -1)
             btn_del.bind(on_press=lambda _btn, i=real_idx: self._eliminar_parada(i))
             fila.add_widget(lbl)
             if estado == 'error':
@@ -828,7 +711,10 @@ class RepartidorApp(App if App is not object else object):
             self.lista_widget.add_widget(fila)
 
         if self.btn_ruta is not None:
-            self.btn_ruta.disabled = not bool(self.lista_paradas)
+            self.btn_ruta.disabled = (
+                not bool(self.lista_paradas)
+                or bool(self._paradas_pendientes_o_invalidas())
+            )
 
     def _eliminar_parada(self, indice):
         repartidor.eliminar_parada(self.lista_paradas, indice)
@@ -839,7 +725,7 @@ class RepartidorApp(App if App is not object else object):
 
     def _on_prioridad_cambio(self, _spinner, prioridad):
         color = repartidor.PRIORITY_COLORS.get(
-            prioridad, repartidor.PRIORITY_COLORS['media']
+            prioridad, repartidor.PRIORITY_COLORS['sin prioridad']
         )
         if self.spinner_prioridad is not None:
             self.spinner_prioridad.background_color = color
@@ -854,7 +740,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._notificacion = repartidor.normalizar_cartas(valor)
         spinner.text = _SELECT_CARTAS
-        self._set_estado(f'Cartas: {self._notificacion}')
+        self._set_estado(f'Tipo de entrega: {self._notificacion}')
 
     # ------------------------------------------------------------------
     # Abrir Maps
@@ -875,13 +761,7 @@ class RepartidorApp(App if App is not object else object):
             self._set_estado('Obteniendo la posición GPS actual antes de abrir la ruta…')
             self.solicitar_ubicacion()
             return
-        pendientes = [
-            parada for parada in self.lista_paradas
-            if parada.get('estado') == 'geolocalizando'
-            or not repartidor.coordenadas_validas(
-                parada.get('lat'), parada.get('lng')
-            )
-        ]
+        pendientes = self._paradas_pendientes_o_invalidas()
         if pendientes:
             estados = {parada.get('estado') for parada in pendientes}
             if 'geolocalizando' in estados:
@@ -920,6 +800,16 @@ class RepartidorApp(App if App is not object else object):
         if self.lbl_estado is not None:
             self.lbl_estado.text = str(texto)
 
+    def _paradas_pendientes_o_invalidas(self):
+        return [
+            parada
+            for parada in self.lista_paradas
+            if parada.get('estado') == 'geolocalizando'
+            or not repartidor.coordenadas_validas(
+                parada.get('lat'), parada.get('lng')
+            )
+        ]
+
     @staticmethod
     def _ejecutar_en_segundo_plano(callback):
         threading.Thread(target=callback, daemon=True).start()
@@ -946,10 +836,6 @@ class RepartidorApp(App if App is not object else object):
         if self._popup_confirmacion is not None:
             self._popup_confirmacion.dismiss()
             self._popup_confirmacion = None
-        if self._temp_scan_path:
-            self._eliminar_temporal(self._temp_scan_path)
-            self._temp_scan_path = None
-        self._camera_en_curso = False
         android_services.cancel_pending_activities()
 
     def on_pause(self):
