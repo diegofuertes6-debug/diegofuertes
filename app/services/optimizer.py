@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Iterable, List
 
 from app.domain.priority import Priority
+from app.services.geo import haversine_km
 
 
 def is_after_cutoff(now: datetime) -> bool:
@@ -56,18 +57,9 @@ def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List
 def distance_km(a: dict, b: dict) -> float:
     try:
         lat1 = float(a["lat"])
-        lon1 = float(a["lng"])
+        lng1 = float(a["lng"])
         lat2 = float(b["lat"])
-        lon2 = float(b["lng"])
+        lng2 = float(b["lng"])
     except (KeyError, TypeError, ValueError):
         return float("inf")
-
-    import math
-
-    r = 6371.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.atan2(math.sqrt(h), math.sqrt(1 - h))
+    return haversine_km(lat1, lng1, lat2, lng2)

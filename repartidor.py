@@ -67,6 +67,12 @@ try:
 except ImportError:
     kivy_platform = None
 
+try:
+    from app.services.geo import haversine_km as _geo_haversine_km, coords_valid as _geo_coords_valid
+except ImportError:  # pragma: no cover
+    _geo_haversine_km = None
+    _geo_coords_valid = None
+
 
 def _get_platform_name():
     if callable(kivy_platform):
@@ -577,6 +583,8 @@ def completar_alta_parada(paradas, parada, geocodificador=None):
 
 def _haversine(lat1, lng1, lat2, lng2):
     """Distancia en km entre dos puntos (fórmula haversine)."""
+    if _geo_haversine_km is not None:
+        return _geo_haversine_km(lat1, lng1, lat2, lng2)
     r = 6371.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -587,6 +595,8 @@ def _haversine(lat1, lng1, lat2, lng2):
 
 def coordenadas_validas(lat, lng):
     """Return whether latitude and longitude form a real geographic point."""
+    if _geo_coords_valid is not None:
+        return _geo_coords_valid(lat, lng)
     if (
         isinstance(lat, bool)
         or isinstance(lng, bool)
