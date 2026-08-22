@@ -765,6 +765,7 @@ class FlujosEntradaParadaTests(unittest.TestCase):
         app._abrir_maps_ubicacion = MagicMock()
         app.abrir_google_maps = MagicMock()
 
+        self.assertTrue(app._abrir_maps_con_deposito)
         app._on_ubicacion({'lat': 40.4, 'lng': -3.7})
         app._on_ubicacion({'lat': 40.5, 'lng': -3.8})
 
