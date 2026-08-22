@@ -390,10 +390,10 @@ class RepartidorApp(App if App is not object else object):
             self.abrir_google_maps()
 
     # ------------------------------------------------------------------
-    # Reloj 19:00
+    # Reloj 18:30
     # ------------------------------------------------------------------
     def _programar_reloj_19(self):
-        """Recalcula la ruta cada minuto para aplicar la regla de las 19:00."""
+        """Recalcula la ruta cada minuto para aplicar la regla de las 18:30."""
         if Clock:
             self._clock_19 = Clock.schedule_interval(self._verificar_hora_19, 60)
 
