@@ -18,16 +18,21 @@ class Priority(Enum):
 
     @property
     def color(self):
-        return {
-            Priority.HIGH: "red",
-            Priority.MEDIUM: "orange",
-            Priority.LOW: "white",
-        }.get(self, "orange")
+        return _PRIORITY_COLORS.get(self, "orange")
 
     @property
     def order(self):
-        return {
-            Priority.HIGH: 0,
-            Priority.MEDIUM: 1,
-            Priority.LOW: 2,
-        }.get(self, 1)
+        return _PRIORITY_ORDER.get(self, 1)
+
+
+_PRIORITY_COLORS = {
+    Priority.HIGH: "red",
+    Priority.MEDIUM: "orange",
+    Priority.LOW: "white",
+}
+
+_PRIORITY_ORDER = {
+    Priority.HIGH: 0,
+    Priority.MEDIUM: 1,
+    Priority.LOW: 2,
+}

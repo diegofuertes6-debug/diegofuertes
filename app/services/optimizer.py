@@ -4,14 +4,32 @@ from datetime import datetime
 from typing import Iterable, List
 
 from app.domain.priority import Priority
+from app.services.geo import haversine_km
+
+
+def is_after_cutoff(now: datetime) -> bool:
+    """Return True once the 18:30 daily optimization cut-off has been reached."""
+    return now.hour > 18 or (now.hour == 18 and now.minute >= 30)
 
 
 def optimize_initial(stops: Iterable[dict]) -> List[dict]:
-    """Sin prioridad: devuelve la secuencia más corta por distancia."""
+    """Sin prioridad: devuelve la secuencia más corta por distancia.
+
+    Stops that have no valid coordinates are preserved and appended at the
+    end of the returned list unchanged.
+    """
     items = [stop for stop in stops if isinstance(stop, dict)]
     if not items:
         return []
-    valid = [stop for stop in items if isinstance(stop.get("lat"), (int, float)) and isinstance(stop.get("lng"), (int, float))]
+
+    valid = []
+    no_coords = []
+    for stop in items:
+        if isinstance(stop.get("lat"), (int, float)) and isinstance(stop.get("lng"), (int, float)):
+            valid.append(stop)
+        else:
+            no_coords.append(stop)
+
     if not valid:
         return list(items)
 
@@ -22,7 +40,7 @@ def optimize_initial(stops: Iterable[dict]) -> List[dict]:
         next_stop = min(remaining, key=lambda stop: distance_km(current, stop))
         ordered.append(next_stop)
         remaining.remove(next_stop)
-    return ordered
+    return ordered + no_coords
 
 
 def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List[dict]:
@@ -31,7 +49,7 @@ def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List
     if not items:
         return []
 
-    if now.hour < 18 or (now.hour == 18 and now.minute < 30):
+    if not is_after_cutoff(now):
         return optimize_initial(items)
 
     pending = [stop for stop in items if stop.get("pending", False)]
@@ -51,18 +69,9 @@ def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List
 def distance_km(a: dict, b: dict) -> float:
     try:
         lat1 = float(a["lat"])
-        lon1 = float(a["lng"])
+        lng1 = float(a["lng"])
         lat2 = float(b["lat"])
-        lon2 = float(b["lng"])
+        lng2 = float(b["lng"])
     except (KeyError, TypeError, ValueError):
         return float("inf")
-
-    import math
-
-    r = 6371.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.atan2(math.sqrt(h), math.sqrt(1 - h))
+    return haversine_km(lat1, lng1, lat2, lng2)
