@@ -86,7 +86,7 @@ def procesar_imagen(path):
 
 
 def leer_texto_imagen(path):
-    """OCR retirado: siempre devuelve texto vacío."""
+    """OCR retirado: siempre devuelve ''."""
     del path
     return ''
 
