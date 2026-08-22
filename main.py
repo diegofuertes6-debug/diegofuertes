@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import threading
 import webbrowser
@@ -36,7 +37,9 @@ import android_services
 
 CONFIG_FILE = 'webServerApiSettings.json'
 
-_MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
+logger = logging.getLogger(__name__)
+
+_MODO_TRAVELMODE = {'A pie': 'pie', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
 _SELECT_CARTAS = 'Cartas'
 STOP_ACTIONS = (
@@ -57,14 +60,17 @@ def _config_path():
 def _hora_actual():
     """Devuelve la hora local actual (0-23) usando ``datetime.now().hour``."""
     from datetime import datetime
-    return datetime.now().hour
+    try:
+        return datetime.now().hour
+    except Exception:
+        return 0
 
 
 class RepartidorApp(App if App is not object else object):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lista_paradas = []
-        self.api_key = repartidor.API_KEY or self._cargar_api_key_legacy()
+        self.api_key = getattr(repartidor, 'API_KEY', '') or self._cargar_api_key_legacy()
         self.lbl_estado = None
         self.btn_ruta = None
         self.lista_widget = None
@@ -101,8 +107,8 @@ class RepartidorApp(App if App is not object else object):
                     data = json.load(handle)
                 if isinstance(data, dict):
                     return str(data.get('googleMapsApiKey', '') or '')
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("No se pudo leer la API key legacy: %s", exc)
         return ''
 
     # ------------------------------------------------------------------
@@ -171,7 +177,7 @@ class RepartidorApp(App if App is not object else object):
         fila_opts.add_widget(Label(text='Modo:', size_hint_x=0.15, font_size='13sp'))
         self.spinner_modo = Spinner(
             text='Moto',
-            values=['A pie', 'Coche', 'Moto'],
+            values=['Moto', 'A pie'],
             size_hint_x=0.2,
         )
         self.spinner_modo.bind(text=self._on_modo_cambio)
@@ -255,10 +261,14 @@ class RepartidorApp(App if App is not object else object):
             'Necesitamos tu ubicación para usar el punto actual como salida y '
             'regreso de la ruta. Android mostrará ahora el permiso.'
         )
-        android_services.request_runtime_permissions(
-            android_services.LOCATION_PERMISSIONS,
-            self._on_permiso_ubicacion,
-        )
+        try:
+            android_services.request_runtime_permissions(
+                android_services.LOCATION_PERMISSIONS,
+                self._on_permiso_ubicacion,
+            )
+        except Exception as exc:
+            logger.exception("Error solicitando permisos de ubicación")
+            self._set_estado(f'No se pudieron pedir permisos de ubicación: {exc}')
 
     def _on_permiso_ubicacion(self, concedido, denegados):
         if not concedido and not android_services.has_location_permission(denegados):
@@ -410,10 +420,14 @@ class RepartidorApp(App if App is not object else object):
         """Take a photo and propose its OCR address for confirmation."""
         if android_services.is_android():
             self._set_estado('Solicitando acceso a la cámara…')
-            android_services.request_runtime_permissions(
-                android_services.CAMERA_PERMISSIONS,
-                self._on_permiso_camara,
-            )
+            try:
+                android_services.request_runtime_permissions(
+                    android_services.CAMERA_PERMISSIONS,
+                    self._on_permiso_camara,
+                )
+            except Exception as exc:
+                logger.exception("Error solicitando permisos de cámara")
+                self._set_estado(f'No se pudieron pedir permisos de cámara: {exc}')
             return
         self._abrir_camara()
 
@@ -460,6 +474,7 @@ class RepartidorApp(App if App is not object else object):
 
     def _procesar_texto_ocr(self, texto, filepath):
         try:
+            texto = str(texto or '')
             componentes = repartidor.construir_direccion_estructurada(texto)
             direccion_completa = componentes.get('direccion_completa', '').strip()
             if direccion_completa:
@@ -541,13 +556,22 @@ class RepartidorApp(App if App is not object else object):
         """Dicta una dirección por voz y añade la parada."""
         if android_services.is_android():
             self._set_estado('Solicitando acceso al micrófono…')
-            android_services.request_runtime_permissions(
-                android_services.MICROPHONE_PERMISSIONS,
-                self._on_permiso_microfono,
-            )
+            try:
+                android_services.request_runtime_permissions(
+                    android_services.MICROPHONE_PERMISSIONS,
+                    self._on_permiso_microfono,
+                )
+            except Exception as exc:
+                logger.exception("Error solicitando permisos de micrófono")
+                self._set_estado(f'No se pudieron pedir permisos de micrófono: {exc}')
             return
         self._set_estado('Escuchando micrófono…')
-        texto = repartidor.dictar_direccion()
+        try:
+            texto = repartidor.dictar_direccion()
+        except Exception as exc:
+            logger.exception("Error en dictado de voz")
+            self._set_estado(f'Error al capturar voz: {exc}')
+            return
         if texto:
             self._mostrar_confirmacion([texto], 'micrófono')
         else:
@@ -563,10 +587,14 @@ class RepartidorApp(App if App is not object else object):
             )
             return
         self._set_estado('Di ahora la dirección completa…')
-        android_services.start_speech_recognition(
-            lambda texto: self._mostrar_confirmacion([texto], 'micrófono'),
-            self._set_estado,
-        )
+        try:
+            android_services.start_speech_recognition(
+                lambda texto: self._mostrar_confirmacion([texto], 'micrófono'),
+                self._set_estado,
+            )
+        except Exception as exc:
+            logger.exception("Error iniciando reconocimiento de voz")
+            self._set_estado(f'Error al iniciar el reconocimiento de voz: {exc}')
 
     def buscar_manual(self, *_args):
         """Geocodifica la dirección escrita manualmente."""
@@ -784,6 +812,9 @@ class RepartidorApp(App if App is not object else object):
             hora_actual=hora,
             origen_lat=origen_lat, origen_lng=origen_lng,
         )
+        if not isinstance(paradas_ord, list):
+            logger.warning("priorizar_paradas devolvió un tipo inesperado: %s", type(paradas_ord))
+            paradas_ord = list(self.lista_paradas)
 
         for idx, parada in enumerate(paradas_ord):
             estado = parada.get('estado', 'pendiente')
@@ -897,17 +928,26 @@ class RepartidorApp(App if App is not object else object):
             return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
-        url = repartidor.generar_ruta_maps(
-            self.lista_paradas,
-            modo=modo,
-            hora_actual=_hora_actual(),
-            origen_lat=loc.get('lat'),
-            origen_lng=loc.get('lng'),
-        )
+        try:
+            url = repartidor.generar_ruta_maps(
+                self.lista_paradas,
+                modo=modo,
+                hora_actual=_hora_actual(),
+                origen_lat=loc.get('lat'),
+                origen_lng=loc.get('lng'),
+            )
+        except Exception as exc:
+            logger.exception("Error generando ruta")
+            self._set_estado(f'Error al generar la ruta: {exc}')
+            return
         if url.startswith('http'):
             self._open_map_when_located = False
             if android_services.is_android():
-                android_services.open_map_url(url, self._set_estado)
+                try:
+                    android_services.open_map_url(url, self._set_estado)
+                except Exception as exc:
+                    logger.exception("Error abriendo Maps en Android")
+                    self._set_estado(f'No se pudo abrir Maps: {exc}')
             else:
                 webbrowser.open(url)
         else:
@@ -917,19 +957,32 @@ class RepartidorApp(App if App is not object else object):
     # Helpers
     # ------------------------------------------------------------------
     def _set_estado(self, texto):
-        if self.lbl_estado is not None:
-            self.lbl_estado.text = str(texto)
+        try:
+            if self.lbl_estado is not None:
+                self.lbl_estado.text = str(texto)
+        except Exception:
+            logger.exception("No se pudo actualizar el estado")
 
     @staticmethod
     def _ejecutar_en_segundo_plano(callback):
-        threading.Thread(target=callback, daemon=True).start()
+        def runner():
+            try:
+                callback()
+            except Exception:
+                logger.exception("Error en tarea en segundo plano")
+        threading.Thread(target=runner, daemon=True).start()
 
     @staticmethod
     def _dispatch_ui(callback):
+        def safe_callback():
+            try:
+                callback()
+            except Exception:
+                logger.exception("Error ejecutando callback UI")
         if Clock:
-            Clock.schedule_once(lambda _delta: callback(), 0)
+            Clock.schedule_once(lambda _delta: safe_callback(), 0)
         else:
-            callback()
+            safe_callback()
 
     @staticmethod
     def _eliminar_temporal(filepath):
@@ -940,35 +993,62 @@ class RepartidorApp(App if App is not object else object):
             pass
 
     def on_stop(self):
-        if self._clock_19 is not None:
-            self._clock_19.cancel()
-            self._clock_19 = None
-        if self._popup_confirmacion is not None:
-            self._popup_confirmacion.dismiss()
-            self._popup_confirmacion = None
-        if self._temp_scan_path:
-            self._eliminar_temporal(self._temp_scan_path)
-            self._temp_scan_path = None
+        try:
+            if self._clock_19 is not None:
+                self._clock_19.cancel()
+                self._clock_19 = None
+        except Exception:
+            logger.exception("Error cancelando reloj")
+        try:
+            if self._popup_confirmacion is not None:
+                self._popup_confirmacion.dismiss()
+                self._popup_confirmacion = None
+        except Exception:
+            logger.exception("Error cerrando popup")
+        try:
+            if self._temp_scan_path:
+                self._eliminar_temporal(self._temp_scan_path)
+                self._temp_scan_path = None
+        except Exception:
+            logger.exception("Error limpiando temporal")
         self._camera_en_curso = False
-        android_services.cancel_pending_activities()
+        try:
+            getattr(android_services, 'cancel_pending_activities', lambda: None)()
+        except Exception:
+            logger.exception("Error cancelando actividades pendientes")
 
     def on_pause(self):
         self._resume_location_after_pause = self._location_request_in_progress
         self._location_request_generation += 1
         self._location_request_in_progress = False
         if self._location_cancel is not None:
-            self._location_cancel()
+            try:
+                self._location_cancel()
+            except Exception:
+                logger.exception("Error cancelando localización en pausa")
             self._location_cancel = None
         else:
-            android_services.cancel_location_request()
+            try:
+                android_services.cancel_location_request()
+            except Exception:
+                logger.exception("Error en cancel_location_request")
         return True
 
     def on_resume(self):
-        if not android_services.is_android():
+        try:
+            if not android_services.is_android():
+                return
+        except Exception:
+            logger.exception("Error comprobando is_android en resume")
             return
         if self._waiting_location_settings:
             self._waiting_location_settings = False
-            if android_services.is_location_enabled():
+            try:
+                enabled = android_services.is_location_enabled()
+            except Exception:
+                logger.exception("Error comprobando ubicación en resume")
+                enabled = False
+            if enabled:
                 self._location_dialog_shown = False
                 self._set_estado('Ubicación activada. Obteniendo posición actual…')
                 self._comprobar_proveedor_y_localizar(prompt_settings=False)
@@ -980,10 +1060,13 @@ class RepartidorApp(App if App is not object else object):
             self._resume_location_after_pause = False
         elif self._resume_location_after_pause:
             self._resume_location_after_pause = False
-            if (
-                android_services.location_permission_granted()
-                and android_services.is_location_enabled()
-            ):
+            try:
+                perm = android_services.location_permission_granted()
+                enabled = android_services.is_location_enabled()
+            except Exception:
+                logger.exception("Error comprobando permisos en resume")
+                perm = enabled = False
+            if perm and enabled:
                 self._set_estado('Reanudando la obtención de tu posición actual…')
                 self._iniciar_localizacion()
 
