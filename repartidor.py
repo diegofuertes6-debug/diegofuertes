@@ -34,9 +34,13 @@ API_KEY_CANDIDATES = (
 PRIORITY_ORDER = ('alta', 'media', 'baja')
 PRIORITY_COLORS = {
     'alta': (1.0, 0.0, 0.0, 1.0),
-    'media': (1.0, 1.0, 0.0, 1.0),
+    'media': (1.0, 0.5, 0.0, 1.0),
     'baja': (0.0, 1.0, 0.0, 1.0),
 }
+PACKAGE_OPTIONS = ('Urgente', 'Normal')
+DEFAULT_PACKAGE = 'Normal'
+LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
+DEFAULT_LETTER = 'Sin cartas'
 
 try:
     from dotenv import load_dotenv
@@ -164,6 +168,94 @@ def extraer_direccion_texto_ocr(texto):
     if cp_final:
         direccion = re.sub(rf'(?:,\s*)?\b{re.escape(cp_final)}\b.*$', '', direccion).strip(' ,')
     return direccion, cp_final
+
+
+def construir_direccion_estructurada(texto):
+    """Parse OCR text into structured Spanish address components.
+
+    Returns:
+        dict: {
+            'calle_tipo': str,       # ej: 'Calle', 'Avenida', 'Plaza'
+            'calle_nombre': str,     # ej: 'Mayor'
+            'numero': str,           # ej: '42'
+            'codigo_postal': str,    # ej: '28001'
+            'poblacion': str,        # ej: 'Madrid'
+            'direccion_completa': str,  # dirección formateada lista para geocodificar
+        }
+    """
+    texto = str(texto or '')
+
+    result = {
+        'calle_tipo': '',
+        'calle_nombre': '',
+        'numero': '',
+        'codigo_postal': '',
+        'poblacion': '',
+        'direccion_completa': '',
+    }
+
+    # Extract postal code (5 digits)
+    cp_match = re.search(r'\b(\d{5})\b', texto)
+    if cp_match:
+        result['codigo_postal'] = cp_match.group(1)
+
+    # Extract street type prefix
+    tipo_pattern = re.compile(
+        r'(?<!\w)(Calle|Calleja|C/|C\./|Avda\.?|Avenida|Avinguda|Plaza|'
+        r'Paseo|Carrera|Camino|Ronda|V[ií]a|Carretera|Traves[ií]a)(?=\s|$)',
+        re.IGNORECASE,
+    )
+    tipo_match = tipo_pattern.search(texto)
+    if tipo_match:
+        result['calle_tipo'] = tipo_match.group(1)
+        resto = texto[tipo_match.end():].strip()
+        # Street name followed optionally by a number: "Mayor, 42" or "Mayor 42"
+        nombre_num = re.match(
+            r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)[\s,]+(\d{1,4}[A-Za-z]?)',
+            resto,
+        )
+        if nombre_num:
+            result['calle_nombre'] = nombre_num.group(1).strip(' ,')
+            result['numero'] = nombre_num.group(2).strip()
+        else:
+            nombre_solo = re.match(r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)', resto)
+            if nombre_solo:
+                result['calle_nombre'] = nombre_solo.group(1).strip(' ,')
+
+    # Extract city name: text after the postal code up to the next number or end
+    if cp_match:
+        after_cp = texto[cp_match.end():].strip()
+        after_cp = re.sub(r'^[\s,;:\-]+', '', after_cp)
+        ciudad_match = re.match(r'([A-Za-záéíóúüñÁÉÍÓÚÜÑ][A-Za-záéíóúüñÁÉÍÓÚÜÑ\s\-]*)', after_cp)
+        if ciudad_match:
+            result['poblacion'] = ciudad_match.group(1).strip()
+
+    # Build the complete address string
+    partes_calle = []
+    if result['calle_tipo'] and result['calle_nombre']:
+        partes_calle.append(f"{result['calle_tipo']} {result['calle_nombre']}")
+    elif result['calle_nombre']:
+        partes_calle.append(result['calle_nombre'])
+
+    if result['numero']:
+        if partes_calle:
+            partes_calle[-1] += f" {result['numero']}"
+        else:
+            partes_calle.append(result['numero'])
+
+    partes_loc = []
+    if result['codigo_postal']:
+        partes_loc.append(result['codigo_postal'])
+    if result['poblacion']:
+        partes_loc.append(result['poblacion'])
+
+    partes = partes_calle[:]
+    if partes_loc:
+        partes.append(' '.join(partes_loc))
+
+    result['direccion_completa'] = ', '.join(partes)
+
+    return result
 
 
 def normalizar_direccion(texto):
@@ -302,6 +394,35 @@ def asignar_prioridad(parada, prioridad):
     return parada
 
 
+def normalizar_paqueteria(valor):
+    """Normalize current and legacy package values to the two supported options."""
+    texto = normalizar_direccion(valor).casefold()
+    if texto == 'urgente' or any(
+        marca in texto for marca in ('express', '24 h', '24h', 'prioritari')
+    ):
+        return 'Urgente'
+    return DEFAULT_PACKAGE
+
+
+def normalizar_cartas(valor):
+    """Normalize legacy notification values without changing the persisted key."""
+    texto = normalizar_direccion(valor).casefold()
+    if texto in {'ordinaria', 'carta ordinaria'}:
+        return 'Ordinaria'
+    if texto in {'certificada', 'carta certificada'}:
+        return 'Certificada'
+    return DEFAULT_LETTER
+
+
+def normalizar_metadatos_parada(parada):
+    """Migrate persisted stop metadata to the current visible choices in place."""
+    if not isinstance(parada, dict):
+        return parada
+    parada['paqueteria'] = normalizar_paqueteria(parada.get('paqueteria'))
+    parada['notificacion'] = normalizar_cartas(parada.get('notificacion'))
+    return parada
+
+
 def _clave_direccion(texto):
     texto = normalizar_direccion(texto).casefold()
     return re.sub(r'[^\w]+', '', texto, flags=re.UNICODE)
@@ -350,8 +471,8 @@ def validar_y_anadir_parada(
     parada['address'] = direccion_resuelta
     parada['estado'] = parada.get('estado') or 'pendiente'
     asignar_prioridad(parada, prioridad)
-    parada['paqueteria'] = paqueteria
-    parada['notificacion'] = notificacion
+    parada['paqueteria'] = normalizar_paqueteria(paqueteria)
+    parada['notificacion'] = normalizar_cartas(notificacion)
     paradas.append(parada)
     return parada, None
 
@@ -382,8 +503,8 @@ def iniciar_alta_parada(
         'address': direccion,
         'estado': 'geolocalizando',
         'origen': origen,
-        'paqueteria': paqueteria,
-        'notificacion': notificacion,
+        'paqueteria': normalizar_paqueteria(paqueteria),
+        'notificacion': normalizar_cartas(notificacion),
     }
     asignar_prioridad(parada, prioridad)
     paradas.append(parada)
@@ -736,7 +857,9 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if hora_actual is None:
         hora_actual = datetime.now().hour
 
-    paradas_validas = [p for p in paradas if isinstance(p, dict)]
+    paradas_validas = [
+        normalizar_metadatos_parada(p) for p in paradas if isinstance(p, dict)
+    ]
 
     if hora_actual >= 19:
         # Regla 19:00: prioridad primero, luego nearest-neighbor por grupo
@@ -779,7 +902,7 @@ def generar_ruta_maps(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     if not coordenadas_validas(origen_lat, origen_lng):
         return (
             'No hay una ubicación de origen válida. Activa la ubicación del '
-            'dispositivo, pulsa "Ubicación" y vuelve a intentarlo.'
+            'dispositivo y vuelve a abrir la ruta.'
         )
 
     paradas_invalidas = [

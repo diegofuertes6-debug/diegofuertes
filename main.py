@@ -38,8 +38,12 @@ CONFIG_FILE = 'webServerApiSettings.json'
 
 _MODO_TRAVELMODE = {'A pie': 'pie', 'Coche': 'coche', 'Moto': 'moto'}
 _PRIORIDAD_VALS = list(repartidor.PRIORITY_ORDER)
-_SELECT_PAQUETERIA = 'Seleccionar paquetería'
-_SELECT_NOTIFICACION = 'Seleccionar notificación'
+_SELECT_CARTAS = 'Cartas'
+STOP_ACTIONS = (
+    ('texto', '🔍', 'Texto', 'Validar y añadir dirección escrita', 'buscar_manual'),
+    ('voz', '🎙', 'Voz', 'Dictar, revisar y añadir dirección', 'dictar_microfono'),
+    ('escaner', '📷', 'Escáner', 'Escanear, revisar y añadir dirección', 'escanear_camara'),
+)
 
 
 def _project_dir():
@@ -70,8 +74,8 @@ class RepartidorApp(App if App is not object else object):
         self.spinner_notificacion = None
         self.txt_busqueda = None
         self._ubicacion_actual = None
-        self._paqueteria = None
-        self._notificacion = None
+        self._paqueteria = repartidor.DEFAULT_PACKAGE
+        self._notificacion = repartidor.DEFAULT_LETTER
         self._clock_19 = None
         self._popup_confirmacion = None
         self._temp_scan_path = None
@@ -84,6 +88,7 @@ class RepartidorApp(App if App is not object else object):
         self._waiting_location_settings = False
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
+        self._open_map_when_located = False
 
     # ------------------------------------------------------------------
     # Legacy API key loader (compatible con el JSON existente)
@@ -119,53 +124,36 @@ class RepartidorApp(App if App is not object else object):
         )
         root.add_widget(self.lbl_estado)
 
-        # ---- Botones entrada de parada ----
-        fila_entrada = BoxLayout(size_hint_y=None, height='56dp', spacing=6)
-        btn_camara = Button(
-            text='📷 Cámara',
-            font_size='12sp',
-            background_color=(0.1, 0.6, 0.9, 1),
-        )
-        btn_camara.bind(on_press=self.escanear_camara)
-
-        btn_micro = Button(
-            text='🎙 Micrófono',
-            font_size='12sp',
-            background_color=(0.2, 0.7, 0.3, 1),
-        )
-        btn_micro.bind(on_press=self.dictar_microfono)
-
-        btn_ubicacion = Button(
-            text='⌖ Ubicación',
-            font_size='12sp',
-            background_color=(0.5, 0.3, 0.8, 1),
-        )
-        btn_ubicacion.bind(on_press=self.solicitar_ubicacion)
-
-        fila_entrada.add_widget(btn_camara)
-        fila_entrada.add_widget(btn_micro)
-        fila_entrada.add_widget(btn_ubicacion)
-        root.add_widget(fila_entrada)
-
-        # ---- Búsqueda manual ----
-        fila_buscar = BoxLayout(size_hint_y=None, height='52dp', spacing=6)
+        # ---- Alta de parada: un campo y exactamente tres acciones ----
+        fila_buscar = BoxLayout(size_hint_y=None, height='64dp', spacing=6)
         self.txt_busqueda = TextInput(
             hint_text='Escribir dirección…',
             multiline=False,
             size_hint_x=1,
-            padding=(10, 13),
+            padding=(10, 18),
         )
-        btn_buscar = Button(
-            text='🔍 Buscar',
-            size_hint_x=None,
-            width='104dp',
-            font_size='13sp',
-            background_color=(0.8, 0.5, 0.1, 1),
-        )
-        btn_buscar.bind(on_press=self.buscar_manual)
         self.txt_busqueda.bind(on_text_validate=self.buscar_manual)
         fila_buscar.add_widget(self.txt_busqueda)
-        fila_buscar.add_widget(btn_buscar)
+        colores = (
+            (0.95, 0.55, 0.1, 1),
+            (0.2, 0.7, 0.3, 1),
+            (0.1, 0.6, 0.9, 1),
+        )
+        for (_identificador, icono, texto, etiqueta, handler), color in zip(
+            STOP_ACTIONS, colores
+        ):
+            boton = Button(
+                text=f'{icono}\n{texto}',
+                size_hint_x=None,
+                width='60dp',
+                font_size='14sp',
+                background_normal='',
+                background_color=color,
+            )
+            boton.tooltip_text = etiqueta
+            boton.accessibility_label = etiqueta
+            boton.bind(on_press=getattr(self, handler))
+            fila_buscar.add_widget(boton)
         root.add_widget(fila_buscar)
 
         # ---- Selección prioridad y modo transporte ----
@@ -192,13 +180,13 @@ class RepartidorApp(App if App is not object else object):
 
         fila_selectores = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
         self.spinner_paqueteria = Spinner(
-            text=_SELECT_PAQUETERIA,
-            values=['Correos', 'SEUR', 'MRW', 'DHL', 'Otra'],
+            text=repartidor.DEFAULT_PACKAGE,
+            values=repartidor.PACKAGE_OPTIONS,
         )
         self.spinner_paqueteria.bind(text=self._on_paqueteria_cambio)
         self.spinner_notificacion = Spinner(
-            text=_SELECT_NOTIFICACION,
-            values=['Sin notificación', 'SMS', 'Correo', 'Llamada'],
+            text=_SELECT_CARTAS,
+            values=repartidor.LETTER_OPTIONS,
         )
         self.spinner_notificacion.bind(text=self._on_notificacion_cambio)
         fila_selectores.add_widget(self.spinner_paqueteria)
@@ -256,6 +244,7 @@ class RepartidorApp(App if App is not object else object):
             self._comprobar_proveedor_y_localizar(prompt_settings=True)
             return
         if self._location_permission_denied or self._location_permission_requested:
+            self._open_map_when_located = False
             self._set_estado(
                 'La ubicación no tiene permiso. Actívalo en Ajustes de la app '
                 'para usar tu posición como depósito.'
@@ -273,6 +262,7 @@ class RepartidorApp(App if App is not object else object):
 
     def _on_permiso_ubicacion(self, concedido, denegados):
         if not concedido and not android_services.has_location_permission(denegados):
+            self._open_map_when_located = False
             self._location_permission_denied = True
             self._set_estado(
                 'Permiso de ubicación denegado. No volveremos a solicitarlo '
@@ -366,6 +356,7 @@ class RepartidorApp(App if App is not object else object):
         self._location_request_in_progress = False
         self._location_cancel = None
         self._ubicacion_actual = None
+        self._open_map_when_located = False
         self._set_estado(error)
         self._refrescar_lista()
 
@@ -374,6 +365,7 @@ class RepartidorApp(App if App is not object else object):
         if loc:
             self._on_ubicacion(loc)
         else:
+            self._open_map_when_located = False
             self._set_estado('No se pudo obtener la ubicación en este equipo.')
 
     def _on_ubicacion(self, loc):
@@ -381,6 +373,7 @@ class RepartidorApp(App if App is not object else object):
             loc.get('lat'), loc.get('lng')
         ):
             self._ubicacion_actual = None
+            self._open_map_when_located = False
             self._set_estado(
                 'No se recibió una ubicación válida. Comprueba que la ubicación '
                 'esté activa y vuelve a intentarlo.'
@@ -392,6 +385,9 @@ class RepartidorApp(App if App is not object else object):
             'La ruta saldrá y volverá exactamente aquí.'
         )
         self._refrescar_lista()
+        if self._open_map_when_located:
+            self._open_map_when_located = False
+            self.abrir_google_maps()
 
     # ------------------------------------------------------------------
     # Reloj 19:00
@@ -464,26 +460,76 @@ class RepartidorApp(App if App is not object else object):
 
     def _procesar_texto_ocr(self, texto, filepath):
         try:
-            candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
-            if candidatos:
-                self._mostrar_confirmacion(candidatos, 'cámara')
+            componentes = repartidor.construir_direccion_estructurada(texto)
+            direccion_completa = componentes.get('direccion_completa', '').strip()
+            if direccion_completa:
+                self._set_estado(
+                    f'Dirección detectada: {direccion_completa}. Geocodificando…'
+                )
+                self._ejecutar_en_segundo_plano(
+                    lambda: self._geocodificar_y_abrir_ocr(componentes)
+                )
             else:
-                self._set_estado('No se detectó una dirección válida en la imagen.')
+                candidatos = repartidor.extraer_candidatos_direccion_ocr(texto)
+                if candidatos:
+                    self._mostrar_confirmacion(candidatos, 'cámara')
+                else:
+                    self._set_estado('No se detectó una dirección válida en la imagen.')
         finally:
             self._eliminar_temporal(filepath)
             self._temp_scan_path = None
             self._camera_en_curso = False
 
+    def _geocodificar_y_abrir_ocr(self, componentes):
+        """Geocode structured OCR address, add stop, and open Maps automatically."""
+        direccion_completa = componentes.get('direccion_completa', '')
+        resultado, detalle = repartidor.resolver_geocodificacion(
+            direccion_completa,
+            geocodificador=repartidor.buscar_direccion_texto,
+        )
+        self._dispatch_ui(
+            lambda: self._finalizar_ocr(componentes, resultado, detalle)
+        )
+
+    def _finalizar_ocr(self, componentes, resultado, detalle):
+        direccion_completa = componentes.get('direccion_completa', '')
+        if not isinstance(resultado, dict) or not repartidor.coordenadas_validas(
+            resultado.get('lat'), resultado.get('lng')
+        ):
+            self._set_estado(
+                f'No se geocodificó "{direccion_completa}". '
+                f'{detalle or "Comprueba la dirección, la conexión y la API key."}'
+            )
+            return
+        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        resultado['prioridad'] = prioridad
+        resultado['paqueteria'] = self._paqueteria
+        resultado['notificacion'] = self._notificacion
+        resultado['estado'] = 'pendiente'
+        resultado.setdefault('address', direccion_completa)
+        self.lista_paradas.append(resultado)
+        self._set_estado(
+            f'Parada añadida desde cámara: {resultado["address"]}. Abriendo Maps…'
+        )
+        self._refrescar_lista()
+        self._abrir_maps_ubicacion(resultado['lat'], resultado['lng'])
+
+    def _abrir_maps_ubicacion(self, lat, lng):
+        """Open Google Maps centered on the given coordinates (non-blocking)."""
+        url = f'https://www.google.com/maps/search/?api=1&query={lat},{lng}'
+        self._ejecutar_en_segundo_plano(lambda: webbrowser.open(url))
+
     def _usar_direccion_ocr(self, direccion, cp):
-        candidatos = []
         if direccion and cp:
-            candidatos.append(f'{direccion}, {cp}')
+            texto = f'{direccion}, {cp}'
         elif direccion:
-            candidatos.append(direccion)
-        if candidatos:
-            self._mostrar_confirmacion(candidatos, 'cámara')
+            texto = direccion
         else:
             self._set_estado('No se detectó una dirección válida en la imagen.')
+            return
+        componentes = repartidor.construir_direccion_estructurada(texto)
+        direccion_completa = componentes.get('direccion_completa') or texto
+        self._mostrar_confirmacion([direccion_completa], 'cámara')
 
     def _error_captura(self, error, filepath):
         self._eliminar_temporal(filepath)
@@ -548,7 +594,7 @@ class RepartidorApp(App if App is not object else object):
         if Popup is object:
             self._set_estado(
                 f'Dirección detectada por {origen}: {candidatos[0]}. '
-                'Revísala en el campo y pulsa Buscar.'
+                'Revísala en el campo y pulsa la lupa.'
             )
             return
 
@@ -714,7 +760,7 @@ class RepartidorApp(App if App is not object else object):
                 self.txt_busqueda.focus = True
         self.lista_paradas.remove(parada)
         self._set_estado(
-            'Corrige la dirección en el campo y pulsa Buscar para geolocalizarla.'
+            'Corrige la dirección en el campo y pulsa la lupa para geolocalizarla.'
         )
         self._refrescar_lista()
 
@@ -799,18 +845,16 @@ class RepartidorApp(App if App is not object else object):
             self.spinner_prioridad.background_color = color
 
     def _on_paqueteria_cambio(self, spinner, valor):
-        if valor == _SELECT_PAQUETERIA:
-            return
-        self._paqueteria = valor
-        spinner.text = _SELECT_PAQUETERIA
+        self._paqueteria = repartidor.normalizar_paqueteria(valor)
+        spinner.text = self._paqueteria
         self._set_estado(f'Paquetería seleccionada: {valor}')
 
     def _on_notificacion_cambio(self, spinner, valor):
-        if valor == _SELECT_NOTIFICACION:
+        if valor == _SELECT_CARTAS:
             return
-        self._notificacion = valor
-        spinner.text = _SELECT_NOTIFICACION
-        self._set_estado(f'Notificación seleccionada: {valor}')
+        self._notificacion = repartidor.normalizar_cartas(valor)
+        spinner.text = _SELECT_CARTAS
+        self._set_estado(f'Cartas: {self._notificacion}')
 
     # ------------------------------------------------------------------
     # Abrir Maps
@@ -820,19 +864,16 @@ class RepartidorApp(App if App is not object else object):
             self._set_estado('Añade al menos una dirección antes de crear la ruta.')
             return
         if android_services.is_android() and not android_services.is_location_enabled():
-            self._set_estado(
-                'La ubicación del dispositivo está desactivada. Actívala en '
-                'Ajustes, pulsa "Ubicación" y vuelve a abrir la ruta.'
-            )
+            self._open_map_when_located = True
+            self._mostrar_dialogo_activar_ubicacion()
             return
         if not repartidor.coordenadas_validas(
             (self._ubicacion_actual or {}).get('lat'),
             (self._ubicacion_actual or {}).get('lng'),
         ):
-            self._set_estado(
-                'No hay una posición actual válida para el depósito. Activa la '
-                'ubicación y pulsa "Ubicación" antes de optimizar.'
-            )
+            self._open_map_when_located = True
+            self._set_estado('Obteniendo la posición GPS actual antes de abrir la ruta…')
+            self.solicitar_ubicacion()
             return
         pendientes = [
             parada for parada in self.lista_paradas
@@ -864,7 +905,11 @@ class RepartidorApp(App if App is not object else object):
             origen_lng=loc.get('lng'),
         )
         if url.startswith('http'):
-            webbrowser.open(url)
+            self._open_map_when_located = False
+            if android_services.is_android():
+                android_services.open_map_url(url, self._set_estado)
+            else:
+                webbrowser.open(url)
         else:
             self._set_estado(url)
 
@@ -929,7 +974,7 @@ class RepartidorApp(App if App is not object else object):
                 self._comprobar_proveedor_y_localizar(prompt_settings=False)
             else:
                 self._set_estado(
-                    'La ubicación sigue apagada. Pulsa "Ubicación" cuando quieras '
+                    'La ubicación sigue apagada. Abre la ruta cuando quieras '
                     'volver a abrir Ajustes.'
                 )
             self._resume_location_after_pause = False

@@ -103,6 +103,31 @@ def open_location_settings(on_error):
         return False
 
 
+def open_map_url(url, on_error):
+    """Open a Maps directions URL through Android's ACTION_VIEW intent."""
+    if not is_android():
+        on_error('La aplicación de mapas solo se abre por Intent en Android.')
+        return False
+    try:
+        from android import mActivity
+        from jnius import autoclass
+
+        Intent = autoclass('android.content.Intent')
+        Uri = autoclass('android.net.Uri')
+        intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        intent.setPackage('com.google.android.apps.maps')
+        if intent.resolveActivity(mActivity.getPackageManager()) is None:
+            intent.setPackage(None)
+        if intent.resolveActivity(mActivity.getPackageManager()) is None:
+            on_error('No hay ninguna aplicación de mapas disponible.')
+            return False
+        mActivity.startActivity(intent)
+        return True
+    except Exception as exc:
+        on_error(f'No se pudo abrir la ruta en el mapa: {exc}')
+        return False
+
+
 def request_runtime_permissions(permissions, callback):
     """Request only missing permissions and report ``(granted, denied)``."""
     permissions = tuple(permissions)
@@ -331,7 +356,7 @@ def get_current_location(on_location, on_error):
         _dispatch(
             on_error,
             'No se obtuvo una ubicación en 15 segundos. Sal a una zona abierta '
-            'y pulsa "Ubicación" para reintentar.',
+            'y vuelve a abrir la ruta para reintentar.',
         )
 
     def finish_location(**location):
