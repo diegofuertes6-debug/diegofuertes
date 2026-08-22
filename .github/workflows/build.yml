@@ -68,7 +68,6 @@ jobs:
           echo "SDK ROOT: $ANDROID_SDK_ROOT"
           which aidl || true
           ls -la "$ANDROID_SDK_ROOT/build-tools/34.0.0" | grep aidl
-
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip setuptools wheel
