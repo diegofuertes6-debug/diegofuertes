@@ -812,19 +812,6 @@ class RepartidorApp(App if App is not object else object):
     def _activar_modo_navegacion(self):
         self._modo_navegacion = True
         self._indice_parada_actual = None
-        modo = _MODO_TRAVELMODE.get(
-            self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto'
-        )
-        loc = self._ubicacion_actual or {}
-        self.lista_paradas = list(
-            repartidor.priorizar_paradas(
-                self.lista_paradas,
-                modo=modo,
-                hora_actual=_hora_actual(),
-                origen_lat=loc.get('lat'),
-                origen_lng=loc.get('lng'),
-            )
-        )
         if self.btn_ruta is not None:
             self.btn_ruta.text = '🔄 VOLVER A OPTIMIZAR'
         self._set_estado(
@@ -859,6 +846,9 @@ class RepartidorApp(App if App is not object else object):
                 hora_actual=hora,
                 origen_lat=origen_lat, origen_lng=origen_lng,
             )
+        indices_paradas = {
+            id(parada): indice for indice, parada in enumerate(self.lista_paradas)
+        }
 
         for idx, parada in enumerate(paradas_ord):
             estado = parada.get('estado', 'pendiente')
@@ -866,7 +856,9 @@ class RepartidorApp(App if App is not object else object):
                 parada.get('prioridad', 'media'),
                 repartidor.PRIORITY_COLORS['media'],
             )
-            real_idx = self.lista_paradas.index(parada) if parada in self.lista_paradas else -1
+            real_idx = indices_paradas.get(id(parada), -1)
+            if real_idx < 0 and parada in self.lista_paradas:
+                real_idx = self.lista_paradas.index(parada)
             if self._modo_navegacion:
                 fila = BoxLayout(size_hint_y=None, height='56dp', spacing=4)
                 if estado == 'entregado':
@@ -992,6 +984,7 @@ class RepartidorApp(App if App is not object else object):
         if not self.lista_paradas:
             self._modo_navegacion = False
             self._indice_parada_actual = None
+            self._set_estado('Sin paradas. Modo edición activo.')
         self._refrescar_lista()
 
     def _on_modo_cambio(self, *_args):
@@ -1057,17 +1050,18 @@ class RepartidorApp(App if App is not object else object):
             return
         modo = _MODO_TRAVELMODE.get(self.spinner_modo.text if self.spinner_modo else 'Moto', 'moto')
         loc = self._ubicacion_actual or {}
+        hora_actual = _hora_actual()
         paradas_optimizadas = repartidor.priorizar_paradas(
             self.lista_paradas,
             modo=modo,
-            hora_actual=_hora_actual(),
+            hora_actual=hora_actual,
             origen_lat=loc.get('lat'),
             origen_lng=loc.get('lng'),
         )
         url = repartidor.generar_ruta_maps(
             paradas_optimizadas,
             modo=modo,
-            hora_actual=_hora_actual(),
+            hora_actual=hora_actual,
             origen_lat=loc.get('lat'),
             origen_lng=loc.get('lng'),
         )
