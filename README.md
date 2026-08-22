@@ -11,13 +11,13 @@ Aplicación Kivy para Android con login, geolocalización, gestión de paradas c
   - 🔍 Búsqueda manual: escribe la dirección y pulsa la lupa o Enter.
   Ambos canales comparten validación, geocodificación y detección de
   duplicados, y siempre muestran si la parada se añadió o por qué se rechazó.
-- **Prioridades**: asigna alta (roja), media (naranja) o baja (verde).
-- **Paquetería y cartas**: elige paquetería Urgente/Normal y el tipo de carta;
+- **Prioridades**: asigna alta (roja), media (naranja) o sin prioridad (azul).
+- **Paquetería y cartas**: usa solo Cartas y Paquetes; los paquetes se clasifican en Pequeño/Mediano/Grande;
   los valores antiguos se normalizan al cargarlos en una parada nueva.
 - **Modo de transporte**: a pie / coche / moto.
 - **Optimización de ruta cerrada**: usa la posición actual como depósito y
   genera una ruta que sale y regresa exactamente a esa misma coordenada.
-- **Regla de las 19:00**: a partir de las 19:00 hora local las paradas pendientes se reordenan primero por prioridad (alta > media > baja) y dentro de cada grupo se aplica la optimización de vecino más cercano.
+- **Regla de las 19:00**: a partir de las 19:00 hora local las paradas pendientes se reordenan primero por prioridad (alta > media > sin prioridad) y dentro de cada grupo se aplica la optimización de vecino más cercano.
 
 ---
 
@@ -95,7 +95,7 @@ La hora local se obtiene con `datetime.now().hour`.
 | Momento | Comportamiento |
 |---|---|
 | Antes de las 19:00 | Las paradas se ordenan por la heurística del vecino más cercano (minimiza distancia total). |
-| A partir de las 19:00 | Se aplica la **regla de las 19:00**: primero todas las paradas de prioridad **alta**, luego **media**, luego **baja**. Dentro de cada grupo sigue aplicándose la heurística del vecino más cercano. |
+| A partir de las 19:00 | Se aplica la **regla de las 19:00**: primero todas las paradas de prioridad **alta**, luego **media**, luego **sin prioridad**. Dentro de cada grupo sigue aplicándose la heurística del vecino más cercano. |
 
 El recálculo se dispara automáticamente:
 - Cada minuto (reloj interno de la app).

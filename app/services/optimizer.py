@@ -26,7 +26,7 @@ def optimize_initial(stops: Iterable[dict]) -> List[dict]:
 
 
 def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List[dict]:
-    """Desde 18:30, aplica prioridad alta > media > baja y dentro de cada grupo optimiza distancia."""
+    """Desde 18:30, aplica prioridad alta > media > sin prioridad y optimiza distancia por grupo."""
     items = [stop for stop in stops if isinstance(stop, dict)]
     if not items:
         return []
@@ -36,13 +36,13 @@ def optimize_pending_with_priority(stops: Iterable[dict], now: datetime) -> List
 
     pending = [stop for stop in items if stop.get("pending", False)]
     source = pending if pending else items
-    grouped = {Priority.HIGH: [], Priority.MEDIUM: [], Priority.LOW: []}
+    grouped = {Priority.HIGH: [], Priority.MEDIUM: [], Priority.NONE: []}
     for stop in source:
         priority = Priority.from_value(stop.get("priority"))
         grouped[priority].append(stop)
 
     ordered = []
-    for priority in (Priority.HIGH, Priority.MEDIUM, Priority.LOW):
+    for priority in (Priority.HIGH, Priority.MEDIUM, Priority.NONE):
         if grouped[priority]:
             ordered.extend(optimize_initial(grouped[priority]))
     return ordered

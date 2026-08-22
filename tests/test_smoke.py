@@ -16,7 +16,7 @@ class PriorizacionTests(unittest.TestCase):
 
     def _paradas(self):
         return [
-            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja', 'estado': 'pendiente'},
+            {'address': 'A', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'sin prioridad', 'estado': 'pendiente'},
             {'address': 'B', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta', 'estado': 'pendiente'},
             {'address': 'C', 'lat': 40.2, 'lng': -3.2, 'prioridad': 'media', 'estado': 'pendiente'},
         ]
@@ -34,15 +34,18 @@ class PriorizacionTests(unittest.TestCase):
         paradas = self._paradas()
         ordenadas = repartidor.priorizar_paradas(paradas, modo='moto', hora_actual=19)
         prioridades = [p['prioridad'] for p in ordenadas]
-        # alta debe ir antes que media y baja
+        # alta debe ir antes que media y sin prioridad
         self.assertEqual(prioridades[0], 'alta')
 
-    def test_priorizar_despues_19_alta_media_baja(self):
-        """A las 20:00 el orden debe ser alta > media > baja."""
+    def test_priorizar_despues_19_alta_media_sin_prioridad(self):
+        """A las 20:00 el orden debe ser alta > media > sin prioridad."""
         paradas = self._paradas()
         ordenadas = repartidor.priorizar_paradas(paradas, modo='coche', hora_actual=20)
         prioridades = [p['prioridad'] for p in ordenadas]
-        orden_esperado = sorted(prioridades, key=lambda p: {'alta': 0, 'media': 1, 'baja': 2}[p])
+        orden_esperado = sorted(
+            prioridades,
+            key=lambda p: {'alta': 0, 'media': 1, 'sin prioridad': 2}[p],
+        )
         self.assertEqual(prioridades, orden_esperado)
 
     def test_modo_invalido_usa_moto(self):
@@ -61,10 +64,10 @@ class AsignarPrioridadTests(unittest.TestCase):
         resultado = repartidor.asignar_prioridad(parada, 'ALTA')
         self.assertEqual(resultado['prioridad'], 'alta')
 
-    def test_asignar_prioridad_valor_invalido_usa_media(self):
+    def test_asignar_prioridad_valor_invalido_usa_sin_prioridad(self):
         parada = {'address': 'Y'}
         resultado = repartidor.asignar_prioridad(parada, 'urgente')
-        self.assertEqual(resultado['prioridad'], 'media')
+        self.assertEqual(resultado['prioridad'], 'sin prioridad')
 
     def test_asignar_prioridad_no_dict_devuelve_original(self):
         resultado = repartidor.asignar_prioridad('no-dict', 'alta')
@@ -150,11 +153,11 @@ class ModoTransporteTests(unittest.TestCase):
 
 
 class PrioridadColorTests(unittest.TestCase):
-    def test_mapeo_centralizado_rojo_naranja_verde(self):
-        self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'baja'))
+    def test_mapeo_centralizado_rojo_naranja_azul(self):
+        self.assertEqual(repartidor.PRIORITY_ORDER, ('alta', 'media', 'sin prioridad'))
         self.assertEqual(repartidor.PRIORITY_COLORS['alta'], (1.0, 0.0, 0.0, 1.0))
         self.assertEqual(repartidor.PRIORITY_COLORS['media'], (1.0, 0.5, 0.0, 1.0))
-        self.assertEqual(repartidor.PRIORITY_COLORS['baja'], (0.0, 1.0, 0.0, 1.0))
+        self.assertEqual(repartidor.PRIORITY_COLORS['sin prioridad'], (0.0, 0.4, 1.0, 1.0))
 
 
 class AndroidManifestHookTests(unittest.TestCase):
@@ -337,7 +340,7 @@ class AnadirParadaComunTests(unittest.TestCase):
             '  Calle   Mayor 15, 28013 Madrid  ',
             geocodificador=self.geocodificador,
             prioridad='alta',
-            paqueteria='Urgente',
+            paqueteria='Grande',
             notificacion='Carta certificada',
         )
         self.assertIsNone(error)
@@ -345,8 +348,8 @@ class AnadirParadaComunTests(unittest.TestCase):
         self.geocodificador.assert_called_once_with('Calle Mayor 15, 28013 Madrid')
         self.assertEqual(parada['prioridad'], 'alta')
         self.assertEqual(parada['estado'], 'pendiente')
-        self.assertEqual(parada['paqueteria'], 'Urgente')
-        self.assertEqual(parada['notificacion'], 'Certificada')
+        self.assertEqual(parada['paqueteria'], 'Grande')
+        self.assertEqual(parada['notificacion'], 'Cartas')
 
     def test_rechaza_vacia_o_invalida_sin_geocodificar(self):
         for texto in ('', '   ', '1234'):
@@ -571,16 +574,13 @@ class FlujosEntradaParadaTests(unittest.TestCase):
 
 
 class SelectoresEntregaTests(unittest.TestCase):
-    def test_paqueteria_muestra_solo_urgente_y_normal(self):
-        self.assertEqual(repartidor.PACKAGE_OPTIONS, ('Urgente', 'Normal'))
-        self.assertEqual(repartidor.DEFAULT_PACKAGE, 'Normal')
+    def test_paqueteria_muestra_tamanos_pequeno_mediano_grande(self):
+        self.assertEqual(repartidor.PACKAGE_OPTIONS, ('Pequeño', 'Mediano', 'Grande'))
+        self.assertEqual(repartidor.DEFAULT_PACKAGE, 'Mediano')
 
     def test_selector_y_opciones_de_cartas_no_muestran_notificaciones(self):
         self.assertEqual(main._SELECT_CARTAS, 'Cartas')
-        self.assertEqual(
-            repartidor.LETTER_OPTIONS,
-            ('Sin cartas', 'Ordinaria', 'Certificada'),
-        )
+        self.assertEqual(repartidor.LETTER_OPTIONS, ('Cartas',))
         self.assertNotIn('notificación', ' '.join(repartidor.LETTER_OPTIONS).lower())
 
     def test_normaliza_valores_legacy_persistidos(self):
@@ -590,12 +590,10 @@ class SelectoresEntregaTests(unittest.TestCase):
             'notificacion': 'SMS',
         }
         repartidor.normalizar_metadatos_parada(parada)
-        self.assertEqual(parada['paqueteria'], 'Normal')
-        self.assertEqual(parada['notificacion'], 'Sin cartas')
-        self.assertEqual(repartidor.normalizar_paqueteria('Express 24h'), 'Urgente')
-        self.assertEqual(
-            repartidor.normalizar_cartas('Carta certificada'), 'Certificada'
-        )
+        self.assertEqual(parada['paqueteria'], 'Mediano')
+        self.assertEqual(parada['notificacion'], 'Cartas')
+        self.assertEqual(repartidor.normalizar_paqueteria('Express 24h'), 'Grande')
+        self.assertEqual(repartidor.normalizar_cartas('Carta certificada'), 'Cartas')
 
     def test_callbacks_guardan_paqueteria_y_cartas_canonicas(self):
         app = main.RepartidorApp()
@@ -606,11 +604,11 @@ class SelectoresEntregaTests(unittest.TestCase):
         app._on_paqueteria_cambio(paquete, 'Express 24h')
         app._on_notificacion_cambio(cartas, 'Carta ordinaria')
 
-        self.assertEqual(app._paqueteria, 'Urgente')
-        self.assertEqual(paquete.text, 'Urgente')
-        self.assertEqual(app._notificacion, 'Ordinaria')
+        self.assertEqual(app._paqueteria, 'Grande')
+        self.assertEqual(paquete.text, 'Grande')
+        self.assertEqual(app._notificacion, 'Cartas')
         self.assertEqual(cartas.text, 'Cartas')
-        self.assertIn('Cartas: Ordinaria', app.lbl_estado.text)
+        self.assertIn('Cartas: Cartas', app.lbl_estado.text)
 
 
 class InicioUbicacionTests(unittest.TestCase):
@@ -721,7 +719,7 @@ class ReglaHoraria19Tests(unittest.TestCase):
 
     def test_antes_19_no_aplica_prioridad_estricta(self):
         paradas = [
-            {'address': 'Baja', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'baja'},
+            {'address': 'Sin prioridad', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'sin prioridad'},
             {'address': 'Alta', 'lat': 40.5, 'lng': -3.5, 'prioridad': 'alta'},
         ]
         # Antes de las 19:00: el orden depende de nearest-neighbor, no de prioridad
@@ -738,13 +736,13 @@ class ReglaHoraria19Tests(unittest.TestCase):
         paradas = [
             {'address': 'A1', 'lat': 40.0, 'lng': -3.0, 'prioridad': 'alta'},
             {'address': 'A2', 'lat': 40.1, 'lng': -3.1, 'prioridad': 'alta'},
-            {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'baja'},
+            {'address': 'B1', 'lat': 41.0, 'lng': -4.0, 'prioridad': 'sin prioridad'},
         ]
         result = repartidor.priorizar_paradas(paradas, hora_actual=19)
         # Primero deben salir las dos de alta
         self.assertEqual(result[0]['prioridad'], 'alta')
         self.assertEqual(result[1]['prioridad'], 'alta')
-        self.assertEqual(result[2]['prioridad'], 'baja')
+        self.assertEqual(result[2]['prioridad'], 'sin prioridad')
 
 
 class LegacyCompatTests(unittest.TestCase):
@@ -764,7 +762,7 @@ class LegacyCompatTests(unittest.TestCase):
     def test_priorizar_paradas_orden_correcto_hora_19(self):
         """Compatibilidad: alta primero a las 19:00."""
         paradas = [
-            {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'baja'},
+            {'address': 'A', 'lat': 1.0, 'lng': 1.0, 'prioridad': 'sin prioridad'},
             {'address': 'B', 'lat': 1.1, 'lng': 1.1, 'prioridad': 'alta'},
             {'address': 'C', 'lat': 1.2, 'lng': 1.2, 'prioridad': 'media'},
         ]

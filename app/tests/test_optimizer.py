@@ -16,10 +16,10 @@ class OptimizerTests(unittest.TestCase):
 
     def test_optimize_pending_with_priority_after_1830(self):
         stops = [
-            {"id": "N1", "priority": "baja", "pending": True, "lat": 40.0, "lng": 0.0},
-            {"id": "N2", "priority": "alta", "pending": True, "lat": 40.0, "lng": 1.0},
-            {"id": "N3", "priority": "media", "pending": True, "lat": 39.0, "lng": 0.0},
-            {"id": "N4", "priority": "alta", "pending": False, "lat": 41.0, "lng": 0.0},
+            {"id": "C1", "priority": "baja", "pending": True, "lat": 40.0, "lng": 0.0},
+            {"id": "C2", "priority": "alta", "pending": True, "lat": 40.0, "lng": 1.0},
+            {"id": "C3", "priority": "media", "pending": True, "lat": 39.0, "lng": 0.0},
+            {"id": "C4", "priority": "alta", "pending": False, "lat": 41.0, "lng": 0.0},
         ]
         ordered = optimize_pending_with_priority(stops, datetime(2026, 1, 1, 18, 30))
-        self.assertEqual([s["id"] for s in ordered], ["N2", "N3", "N1"])
+        self.assertEqual([s["id"] for s in ordered], ["C2", "C3", "C1"])

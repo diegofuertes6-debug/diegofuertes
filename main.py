@@ -156,11 +156,11 @@ class RepartidorApp(App if App is not object else object):
         fila_opts = BoxLayout(size_hint_y=None, height='44dp', spacing=6)
         fila_opts.add_widget(Label(text='Prioridad:', size_hint_x=0.3, font_size='13sp'))
         self.spinner_prioridad = Spinner(
-            text='media',
+            text='sin prioridad',
             values=_PRIORIDAD_VALS,
             size_hint_x=0.35,
             background_normal='',
-            background_color=repartidor.PRIORITY_COLORS['media'],
+            background_color=repartidor.PRIORITY_COLORS['sin prioridad'],
         )
         self.spinner_prioridad.bind(text=self._on_prioridad_cambio)
         fila_opts.add_widget(self.spinner_prioridad)
@@ -559,7 +559,9 @@ class RepartidorApp(App if App is not object else object):
             self.txt_busqueda.text = ''
 
     def _validar_y_anadir(self, texto, origen):
-        prioridad = self.spinner_prioridad.text if self.spinner_prioridad else 'media'
+        prioridad = (
+            self.spinner_prioridad.text if self.spinner_prioridad else 'sin prioridad'
+        )
         parada, error = repartidor.iniciar_alta_parada(
             self.lista_paradas,
             texto,
@@ -659,8 +661,8 @@ class RepartidorApp(App if App is not object else object):
             estado = parada.get('estado', 'pendiente')
             fila = BoxLayout(size_hint_y=None, height='52dp', spacing=4)
             color = repartidor.PRIORITY_COLORS.get(
-                parada.get('prioridad', 'media'),
-                repartidor.PRIORITY_COLORS['media'],
+                parada.get('prioridad', 'sin prioridad'),
+                repartidor.PRIORITY_COLORS['sin prioridad'],
             )
             lbl = Label(
                 text=(
@@ -709,7 +711,7 @@ class RepartidorApp(App if App is not object else object):
 
     def _on_prioridad_cambio(self, _spinner, prioridad):
         color = repartidor.PRIORITY_COLORS.get(
-            prioridad, repartidor.PRIORITY_COLORS['media']
+            prioridad, repartidor.PRIORITY_COLORS['sin prioridad']
         )
         if self.spinner_prioridad is not None:
             self.spinner_prioridad.background_color = color

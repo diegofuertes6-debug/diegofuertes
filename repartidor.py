@@ -7,7 +7,7 @@ Cómo funciona la regla de las 19:00
 -------------------------------------
 - La hora local del dispositivo se consulta con ``datetime.now().hour``.
 - Si la hora actual es >= 19, ``priorizar_paradas`` reordena primero por
-  prioridad (alta > media > baja) y dentro de cada grupo conserva el orden
+  prioridad (alta > media > sin prioridad) y dentro de cada grupo conserva el orden
   de menor distancia acumulada (nearest-neighbor greedy).
 - Si la app se abre después de las 19:00 la política se aplica desde el
   primer cálculo. El recálculo también ocurre cuando el usuario añade o
@@ -30,16 +30,16 @@ API_KEY_CANDIDATES = (
     'apiKey',
     'key',
 )
-PRIORITY_ORDER = ('alta', 'media', 'baja')
+PRIORITY_ORDER = ('alta', 'media', 'sin prioridad')
 PRIORITY_COLORS = {
     'alta': (1.0, 0.0, 0.0, 1.0),
     'media': (1.0, 0.5, 0.0, 1.0),
-    'baja': (0.0, 1.0, 0.0, 1.0),
+    'sin prioridad': (0.0, 0.4, 1.0, 1.0),
 }
-PACKAGE_OPTIONS = ('Urgente', 'Normal')
-DEFAULT_PACKAGE = 'Normal'
-LETTER_OPTIONS = ('Sin cartas', 'Ordinaria', 'Certificada')
-DEFAULT_LETTER = 'Sin cartas'
+PACKAGE_OPTIONS = ('Pequeño', 'Mediano', 'Grande')
+DEFAULT_PACKAGE = 'Mediano'
+LETTER_OPTIONS = ('Cartas',)
+DEFAULT_LETTER = 'Cartas'
 
 try:
     from dotenv import load_dotenv
@@ -271,30 +271,32 @@ def obtener_coordenadas(direccion, cp):
 def asignar_prioridad(parada, prioridad):
     if not isinstance(parada, dict):
         return parada
-    prioridad_valida = prioridad.lower().strip() if isinstance(prioridad, str) else 'media'
+    prioridad_valida = (
+        prioridad.lower().strip() if isinstance(prioridad, str) else 'sin prioridad'
+    )
+    if prioridad_valida == 'baja':
+        prioridad_valida = 'sin prioridad'
     if prioridad_valida not in PRIORITY_ORDER:
-        prioridad_valida = 'media'
+        prioridad_valida = 'sin prioridad'
     parada['prioridad'] = prioridad_valida
     return parada
 
 
 def normalizar_paqueteria(valor):
-    """Normalize current and legacy package values to the two supported options."""
+    """Normalize current and legacy package values to size-based options."""
     texto = normalizar_direccion(valor).casefold()
-    if texto == 'urgente' or any(
-        marca in texto for marca in ('express', '24 h', '24h', 'prioritari')
-    ):
-        return 'Urgente'
+    if any(marca in texto for marca in ('peque', 'small')):
+        return 'Pequeño'
+    if any(marca in texto for marca in ('grande', 'large', 'express', '24 h', '24h', 'prioritari', 'urgente')):
+        return 'Grande'
+    if any(marca in texto for marca in ('mediano', 'medio', 'normal', 'standard', 'medium')):
+        return 'Mediano'
     return DEFAULT_PACKAGE
 
 
 def normalizar_cartas(valor):
-    """Normalize legacy notification values without changing the persisted key."""
-    texto = normalizar_direccion(valor).casefold()
-    if texto in {'ordinaria', 'carta ordinaria'}:
-        return 'Ordinaria'
-    if texto in {'certificada', 'carta certificada'}:
-        return 'Certificada'
+    """Normalize all legacy letter values to the single supported option."""
+    del valor
     return DEFAULT_LETTER
 
 
@@ -711,7 +713,7 @@ def priorizar_paradas(paradas, modo='moto', hora_actual=None, origen_lat=None, o
     Regla de las 19:00 (hora local)
     --------------------------------
     Si ``hora_actual`` (entero 0-23) es >= 19, las paradas **pendientes** se
-    reordenan primero por prioridad (alta > media > baja) y dentro de cada
+    reordenan primero por prioridad (alta > media > sin prioridad) y dentro de cada
     grupo de prioridad se aplica la heurística del vecino más cercano para
     minimizar la distancia recorrida.
 
