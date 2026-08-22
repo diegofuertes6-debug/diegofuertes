@@ -89,6 +89,7 @@ class RepartidorApp(App if App is not object else object):
         self._location_dialog_shown = False
         self._resume_location_after_pause = False
         self._open_map_when_located = False
+        self._abrir_maps_con_deposito = True
 
     # ------------------------------------------------------------------
     # Legacy API key loader (compatible con el JSON existente)
@@ -385,6 +386,10 @@ class RepartidorApp(App if App is not object else object):
             'La ruta saldrá y volverá exactamente aquí.'
         )
         self._refrescar_lista()
+        abrir_maps_con_deposito = self._abrir_maps_con_deposito
+        self._abrir_maps_con_deposito = False
+        if abrir_maps_con_deposito and not self._open_map_when_located:
+            self._abrir_maps_ubicacion(loc['lat'], loc['lng'])
         if self._open_map_when_located:
             self._open_map_when_located = False
             self.abrir_google_maps()
