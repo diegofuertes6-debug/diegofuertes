@@ -726,7 +726,7 @@ class RepartidorApp(App if App is not object else object):
             return
         self._notificacion = repartidor.normalizar_cartas(valor)
         spinner.text = _SELECT_CARTAS
-        self._set_estado(f'Cartas: {self._notificacion}')
+        self._set_estado(f'Tipo de entrega: {self._notificacion}')
 
     # ------------------------------------------------------------------
     # Abrir Maps

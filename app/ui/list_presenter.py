@@ -21,24 +21,13 @@ class ListPresenter:
         prefix = ListPresenter._prefix_for(stop)
         number = stop.get("id") or stop.get("code") or "1"
         text_number = str(number).strip()
-        if text_number.startswith(prefix):
-            return text_number
-        numeric = "".join(ch for ch in text_number if ch.isdigit()) or "1"
-        if numeric == "0":
-            numeric = "1"
         if not text_number:
-            numeric = "1"
-        if text_number and text_number[0].isdigit():
-            return f"{prefix}{text_number}"
+            return f"{prefix}1"
         if text_number.lower().startswith(prefix.lower()):
-            return f"{prefix}{text_number[len(prefix):]}"
-        if text_number.isdigit():
-            return f"{prefix}{text_number}"
-        if text_number.isalnum():
-            return f"{prefix}{numeric}"
-        if not text_number.startswith(prefix):
-            return f"{prefix}{numeric}"
-        return str(number)
+            suffix = text_number[len(prefix):].strip()
+            return f"{prefix}{suffix or '1'}"
+        numeric = "".join(ch for ch in text_number if ch.isdigit())
+        return f"{prefix}{numeric or '1'}"
 
     @staticmethod
     def color_for(stop):

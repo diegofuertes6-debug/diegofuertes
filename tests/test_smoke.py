@@ -608,7 +608,7 @@ class SelectoresEntregaTests(unittest.TestCase):
         self.assertEqual(paquete.text, 'Grande')
         self.assertEqual(app._notificacion, 'Cartas')
         self.assertEqual(cartas.text, 'Cartas')
-        self.assertIn('Cartas: Cartas', app.lbl_estado.text)
+        self.assertIn('Tipo de entrega: Cartas', app.lbl_estado.text)
 
 
 class InicioUbicacionTests(unittest.TestCase):
